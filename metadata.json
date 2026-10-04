@@ -1,0 +1,6 @@
+{
+  "name": "ClinicPulse Hospital Management",
+  "description": "Comprehensive clinical practice & hospital management system for small clinics and hospitals, supporting patient registration, doctor assignment, appointment slot booking & locking, prescriptions, lab reports, billing, and WhatsApp record sharing.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
