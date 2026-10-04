@@ -1,6 +1,6 @@
 # Clinic App login: first implementation boundary
 
-Agent Green's first deliverable is the Clinic App's login interface and a typed API contract. It is not a production authentication service until the backend and AWS identity configuration are implemented and verified.
+Agent Green's first deliverable is the Clinic App's login interface, a typed API contract, and a local-only service to exercise the flow with synthetic clinics. This is not a production authentication service until the AWS identity, persistence, and deployment configuration are implemented and verified.
 
 ## Expected flow
 
@@ -14,9 +14,9 @@ The server must validate allowed hostnames and trusted proxy forwarding before d
 
 ## Open implementation decisions
 
-- Choose and configure the AWS identity provider and its multi-tenant user model. Amazon Cognito is a candidate; do not create a custom password database just to make the first screen appear functional.
+- Choose and configure the AWS identity provider and its multi-tenant user model. Amazon Cognito is a candidate. The local test credential store must not be used for the live pilot or as a substitute for this decision.
 - Define staff invitation, password reset, MFA, suspension, and session expiry flows before inviting real clinic users.
 - Choose the owned domain and staging hostnames. Example clinic names and `*.localhost` are for development only.
 - Decide where clinic membership, roles, and module entitlements are stored, and how changes revoke existing access.
 
-Do not use real patient data or call the login complete until the backend checks and the two-clinic isolation tests pass.
+Do not use real patient data or call the login production-ready until the AWS backend, authorization checks, and two-clinic isolation tests pass.

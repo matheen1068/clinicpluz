@@ -13,7 +13,7 @@ pnpm dev
 
 Open `http://goodwell.localhost:5174/login/`. The slug is taken from the hostname. `localhost:5174` alone will not resolve a clinic. For a backend running on another port, set `CLINIC_API_PROXY_TARGET` as shown in `.env.example`. Vite proxies `/api` to `http://127.0.0.1:8787` by default and preserves the original Host header.
 
-If the backend is absent, local development shows a **clearly labeled design preview**. It is not an authenticated clinic. A sign-in attempt first requires a real clinic bootstrap response and then calls the real API; there are no mock credentials or bypasses. Production builds never show the preview and fail closed when clinic discovery or session checks fail.
+For a working local login, run and seed the service in [`services/clinic-auth`](../../services/clinic-auth/README.md). If that service is absent, local development shows a **clearly labeled design preview**. It is not an authenticated clinic. A sign-in attempt first requires a real clinic bootstrap response and then calls the real API; there are no mock credentials or bypasses. Production builds never show the preview and fail closed when clinic discovery or session checks fail.
 
 For production, set `VITE_CLINIC_BASE_DOMAIN` to the actual owned domain before building. The app accepts exactly one clinic label before that suffix, for example `goodwell.example.com`. A staging suffix can be configured separately. Route `/login/` to the app's `index.html`, and route `/api/*` to the backend on the **same origin**. The domain in `.env.example` is illustrative, not a claim that it has been registered.
 
@@ -32,7 +32,7 @@ Supported initial roles are `clinic_admin`, `doctor`, `receptionist`, `nurse`, `
 
 The backend must validate the Host (or forwarded host from an explicitly trusted proxy), derive the clinic from it, and verify that the authenticated staff member belongs to that clinic. A subdomain is routing context, not proof of access. Use an HttpOnly, Secure, SameSite cookie with no `Domain` attribute so it is host-only; a `__Host-` cookie with `Path=/` is suitable. Bind both pre-login and authenticated CSRF tokens to the browser's server-managed session and rotate on authentication. Do not expose tokens or credentials in URLs, localStorage, logs, or analytics. The client stores only transient in-memory UI state.
 
-This app does **not** include a backend or AWS deployment. Until the contract is implemented, production login is unavailable by design.
+The repository now includes a **local-only** backend that implements this contract for development. It is not an AWS deployment or production identity provider. Production login remains unavailable by design until that separate implementation is built and reviewed.
 
 ## Checks
 
