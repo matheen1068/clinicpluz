@@ -1,0 +1,111 @@
+export type ClinicRole = 'clinic_admin' | 'doctor' | 'receptionist' | 'nurse' | 'lab_tech' | 'billing';
+
+export interface ClinicBootstrap {
+  clinic: {
+    slug: string;
+    displayName: string;
+  };
+  csrfToken: string;
+}
+
+export interface StaffSession {
+  clinicSlug: string;
+  csrfToken: string;
+  user: {
+    id: string;
+    displayName: string;
+    role: ClinicRole;
+  };
+}
+
+export class ApiError extends Error {
+  readonly status: number | null;
+
+  constructor(status: number | null, message: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
+const ROLES = new Set<ClinicRole>(['clinic_admin', 'doctor', 'receptionist', 'nurse', 'lab_tech', 'billing']);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function assertBootstrap(value: unknown): ClinicBootstrap {
+  if (!isRecord(value) || !isRecord(value.clinic) ||
+      !isNonEmptyString(value.clinic.slug) || !isNonEmptyString(value.clinic.displayName) ||
+      !isNonEmptyString(value.csrfToken)) {
+    throw new ApiError(null, 'Invalid clinic bootstrap response');
+  }
+  return value as unknown as ClinicBootstrap;
+}
+
+function assertSession(value: unknown): StaffSession {
+  if (!isRecord(value) || !isNonEmptyString(value.clinicSlug) || !isNonEmptyString(value.csrfToken) || !isRecord(value.user) ||
+      !isNonEmptyString(value.user.id) || !isNonEmptyString(value.user.displayName) ||
+      !ROLES.has(value.user.role as ClinicRole)) {
+    throw new ApiError(null, 'Invalid staff session response');
+  }
+  return value as unknown as StaffSession;
+}
+
+async function request(path: string, init: RequestInit = {}): Promise<unknown> {
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      ...init,
+      credentials: 'include',
+      cache: 'no-store',
+      signal: init.signal ?? AbortSignal.timeout(10000),
+      headers: { Accept: 'application/json', ...init.headers },
+    });
+  } catch {
+    throw new ApiError(null, 'Clinic service is unavailable');
+  }
+
+  if (!response.ok) throw new ApiError(response.status, 'Clinic request failed');
+  if (response.status === 204) return null;
+  try {
+    return await response.json();
+  } catch {
+    throw new ApiError(null, 'Invalid clinic service response');
+  }
+}
+
+export async function getClinicBootstrap(): Promise<ClinicBootstrap> {
+  return assertBootstrap(await request('/api/clinic/bootstrap'));
+}
+
+export async function getStaffSession(): Promise<StaffSession | null> {
+  try {
+    return assertSession(await request('/api/auth/session'));
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 401) return null;
+    throw error;
+  }
+}
+
+export async function signIn(username: string, password: string, csrfToken: string): Promise<StaffSession> {
+  return assertSession(await request('/api/auth/login', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRF-Token': csrfToken,
+    },
+    body: JSON.stringify({ username, password }),
+  }));
+}
+
+export async function signOut(csrfToken: string): Promise<void> {
+  await request('/api/auth/logout', {
+    method: 'POST',
+    headers: { 'X-CSRF-Token': csrfToken },
+  });
+}
