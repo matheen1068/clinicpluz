@@ -5,6 +5,6 @@ The product owner and this coordinating chat set priorities, resolve product dec
 | Agent | Status | Ownership |
 | --- | --- | --- |
 | **Agent Green** | Active | Clinic App login, clinic-specific entry experience, and frontend authentication integration. Green must not present a mock or browser-only session as real authentication. |
-| **Agent Black** | On hold | Future ClinicPluz Control Panel for clinic onboarding, staff management, and module entitlements. Black does not start implementation until the product owner releases the hold. |
+| **Agent Black** | Active | Separate ClinicPluz Control Panel backend foundation for clinic onboarding, staff management, and module entitlements. No routine clinical-record access. |
 
-Green hands off the login UI, its API contract, run instructions, checks, and any blocker to the coordinating chat. The coordinator reviews the work against the product brief and prepares the backend/AWS follow-up. Black receives a scoped task only after the clinic login direction is settled. Neither agent deploys, changes external sharing, sends emails, or uses real patient data without a separately scoped request.
+Green hands off the login UI, its API contract, run instructions, checks, and any blocker to the coordinating chat. Black hands off the Control Panel API/data contract, tests, security boundary, and AWS prerequisites to the coordinator. Neither agent deploys, changes external sharing, sends emails, or uses real patient data without a separately scoped request.

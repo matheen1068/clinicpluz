@@ -1,0 +1,155 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: ClinicPluz synthetic staging Control Panel backend (no clinical records)
+
+Parameters:
+  StageName:
+    Type: String
+    Default: staging
+    AllowedPattern: '[a-z][a-z0-9-]{1,30}'
+  PublicOrigin:
+    Type: String
+    Description: Exact Control Panel CloudFront HTTPS origin
+    AllowedPattern: 'https://[a-z0-9-]+\.cloudfront\.net'
+  AuthTableName:
+    Type: String
+    Description: AuthTableName output from the clinic-auth-aws stack
+  StaffUserPoolId:
+    Type: String
+    Description: UserPoolId output from the clinic-auth-aws stack
+  StaffUserPoolArn:
+    Type: String
+    Description: ARN of the same clinic staff user pool
+  AllowedOperatorSub:
+    Type: String
+    Description: Explicit allowlisted sub of a separately provisioned platform operator
+    Default: '00000000-0000-0000-0000-000000000000' # Deny all until an operator is created and this parameter is updated.
+    AllowedPattern: '[0-9a-fA-F-]{36}'
+
+Resources:
+  OperatorUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub clinicpluz-${StageName}-operators
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      MfaConfiguration: 'ON'
+      EnabledMfas: [SOFTWARE_TOKEN_MFA]
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 14
+          RequireLowercase: true
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+
+  OperatorPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref OperatorUserPool
+      ClientName: !Sub clinicpluz-${StageName}-operators-client
+      GenerateSecret: false
+      PreventUserExistenceErrors: ENABLED
+      ExplicitAuthFlows: [ALLOW_USER_PASSWORD_AUTH]
+
+  ControlApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: '$default'
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 10
+        ThrottlingRateLimit: 5
+      Auth:
+        DefaultAuthorizer: OperatorJwt
+        Authorizers:
+          OperatorJwt:
+            IdentitySource: '$request.header.Authorization'
+            JwtConfiguration:
+              issuer: !Sub https://cognito-idp.${AWS::Region}.${AWS::URLSuffix}/${OperatorUserPool}
+              audience: [!Ref OperatorPoolClient]
+
+  ControlFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub clinicpluz-${StageName}-control-panel-api
+      CodeUri: .
+      Handler: handler.handler
+      Runtime: nodejs22.x
+      Architectures: [arm64]
+      MemorySize: 256
+      Timeout: 10
+      Environment:
+        Variables:
+          AUTH_TABLE: !Ref AuthTableName
+          STAFF_USER_POOL_ID: !Ref StaffUserPoolId
+          PUBLIC_ORIGIN: !Ref PublicOrigin
+          OPERATOR_ISSUER: !Sub https://cognito-idp.${AWS::Region}.${AWS::URLSuffix}/${OperatorUserPool}
+          OPERATOR_CLIENT_ID: !Ref OperatorPoolClient
+          ALLOWED_OPERATOR_SUBS: !Ref AllowedOperatorSub
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: ['dynamodb:GetItem']
+              Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AuthTableName}
+              Condition:
+                'ForAllValues:StringLike':
+                  'dynamodb:LeadingKeys': ['CLINIC#*']
+                'Null':
+                  'dynamodb:LeadingKeys': 'false'
+            - Effect: Allow
+              Action: ['dynamodb:ConditionCheckItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem']
+              Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AuthTableName}
+              Condition:
+                'ForAllValues:StringLike':
+                  'dynamodb:LeadingKeys': ['CLINIC#*', 'AUDIT#*']
+                'Null':
+                  'dynamodb:LeadingKeys': 'false'
+            - Effect: Allow
+              Action: ['cognito-idp:AdminGetUser']
+              Resource: !Ref StaffUserPoolArn
+      Events:
+        CreateClinic:
+          Type: HttpApi
+          Properties: { ApiId: !Ref ControlApi, Path: '/api/control/clinics', Method: POST, PayloadFormatVersion: '2.0' }
+        GetClinic:
+          Type: HttpApi
+          Properties: { ApiId: !Ref ControlApi, Path: '/api/control/clinics/{slug}', Method: GET, PayloadFormatVersion: '2.0' }
+        SetState:
+          Type: HttpApi
+          Properties: { ApiId: !Ref ControlApi, Path: '/api/control/clinics/{slug}/state', Method: PATCH, PayloadFormatVersion: '2.0' }
+        SetModules:
+          Type: HttpApi
+          Properties: { ApiId: !Ref ControlApi, Path: '/api/control/clinics/{slug}/modules', Method: PUT, PayloadFormatVersion: '2.0' }
+        CreateStaff:
+          Type: HttpApi
+          Properties: { ApiId: !Ref ControlApi, Path: '/api/control/clinics/{slug}/staff', Method: POST, PayloadFormatVersion: '2.0' }
+        GetStaff:
+          Type: HttpApi
+          Properties: { ApiId: !Ref ControlApi, Path: '/api/control/clinics/{slug}/staff/{username}', Method: GET, PayloadFormatVersion: '2.0' }
+        SetStaff:
+          Type: HttpApi
+          Properties: { ApiId: !Ref ControlApi, Path: '/api/control/clinics/{slug}/staff/{username}', Method: PATCH, PayloadFormatVersion: '2.0' }
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints: [handler.ts]
+        Format: esm
+        OutExtension: ['.js=.mjs']
+        Target: es2022
+        Minify: true
+        Sourcemap: false
+
+  ControlLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/clinicpluz-${StageName}-control-panel-api
+      RetentionInDays: 14
+
+Outputs:
+  ApiOrigin:
+    Value: !Sub https://${ControlApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}
+    Description: Route Control Panel API through no-cache CloudFront behavior; protect the separate operator login UI.
+  OperatorUserPoolId:
+    Value: !Ref OperatorUserPool
+  OperatorClientId:
+    Value: !Ref OperatorPoolClient
