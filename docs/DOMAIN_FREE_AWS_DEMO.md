@@ -1,6 +1,8 @@
 # Domain-free AWS clinic-login demo
 
-Status: staging design for review. No AWS resources have been created by this repository.
+Status (2026-10-08): the product owner created a staging S3 bucket and CloudFront distribution and verified the Goodwell login design preview in the browser. This is a static preview only; the AWS authentication API is not connected. The repository has not created AWS resources.
+
+Known staging values (non-secret): AWS Region `ap-south-1`, S3 bucket `clinicpluz-staging-web-01`, CloudFront hostname `dpq5w4kpcyvb4.cloudfront.net`.
 
 ## Goal and URLs
 
@@ -31,15 +33,15 @@ The local `services/clinic-auth` SQLite service stays local-only and is never de
 
 ## Sequence
 
-1. Make the Clinic App and local test service understand the temporary clinic path. Preserve `<slug>.localhost` development URLs and leave the final subdomain mode configurable.
-2. Create repeatable staging infrastructure for the private S3 origin, CloudFront distribution, same-origin API route, Cognito staff pool, and managed tenant/session storage. The application AWS Region is a deployment parameter. Attach [`infra/cloudfront/clinic-spa-rewrite.js`](../infra/cloudfront/clinic-spa-rewrite.js) to the default S3 behavior so a deep link to a clinic login loads the app. Route `/api/*` to the API origin before the default behavior, with caching disabled.
+1. Completed: make the Clinic App and local test service understand the temporary clinic path. Preserve `<slug>.localhost` development URLs and leave the final subdomain mode configurable.
+2. Partially completed: the product owner created the private S3 origin and CloudFront distribution, uploaded a build configured for the assigned hostname, and attached [`infra/cloudfront/clinic-spa-rewrite.js`](../infra/cloudfront/clinic-spa-rewrite.js) to the default S3 behavior. The next infrastructure slice is a same-origin `/api/*` route, Cognito staff pool, and managed tenant/session storage. The application AWS Region remains a deployment parameter; use `ap-south-1` for the current staging account.
 3. Deploy only after the stack, expected cost, IAM permissions, and environment inputs have been reviewed. Seed two synthetic clinics and staff accounts through a controlled setup path, never with committed passwords.
 4. Verify both login flows, cross-clinic denial, logout, expired/disabled sessions, MFA and password recovery, no API caching, and CloudWatch logs. Share the assigned CloudFront URL for the demo.
 5. After a domain is purchased, add DNS and ACM certificates, route wildcard clinic subdomains, and enforce a hostname/path consistency check during migration.
 
 ## User inputs needed before deployment
 
-- AWS account and application Region to use for staging (the Region is not yet confirmed).
+- AWS account access path for deploying the authentication stack. The staging Region is confirmed as `ap-south-1`.
 - Whether the AWS deployment will be made by the product owner or by the coordinating chat after review.
 - A name for the first synthetic demo clinic. No real staff or patient details are needed.
 
