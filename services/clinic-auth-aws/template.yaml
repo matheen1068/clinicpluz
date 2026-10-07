@@ -1,0 +1,159 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: ClinicPluz synthetic staging staff authentication API (no patient data)
+
+Parameters:
+  StageName:
+    Type: String
+    Default: staging
+    AllowedPattern: '[a-z][a-z0-9-]{1,30}'
+  PublicOrigin:
+    Type: String
+    Description: Exact CloudFront default origin, such as https://dpq5w4kpcyvb4.cloudfront.net
+    AllowedPattern: 'https://[a-z0-9-]+\.cloudfront\.net'
+Resources:
+  EdgeSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: Random CloudFront-to-ClinicPluz-auth origin header value; retrieve only for origin configuration
+      GenerateSecretString:
+        PasswordLength: 48
+        ExcludePunctuation: true
+
+  StaffUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub clinicpluz-${StageName}-staff
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      UsernameConfiguration:
+        CaseSensitive: false
+      MfaConfiguration: 'OFF' # Synthetic staging only; build MFA challenge UI before a real clinic pilot.
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 12
+          RequireLowercase: true
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+
+  StaffUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref StaffUserPool
+      ClientName: !Sub clinicpluz-${StageName}-server-auth
+      GenerateSecret: false
+      PreventUserExistenceErrors: ENABLED
+      ExplicitAuthFlows:
+        - ALLOW_ADMIN_USER_PASSWORD_AUTH
+
+  AuthTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub clinicpluz-${StageName}-auth
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  AuthApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: '$default'
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 20
+        ThrottlingRateLimit: 10
+
+  AuthFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub clinicpluz-${StageName}-auth
+      CodeUri: .
+      Handler: handler.handler
+      Runtime: nodejs22.x
+      Architectures: [arm64]
+      MemorySize: 256
+      Timeout: 10
+      Environment:
+        Variables:
+          AUTH_TABLE: !Ref AuthTable
+          USER_POOL_ID: !Ref StaffUserPool
+          USER_POOL_CLIENT_ID: !Ref StaffUserPoolClient
+          PUBLIC_ORIGIN: !Ref PublicOrigin
+          EDGE_SECRET_ARN: !Ref EdgeSecret
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:DeleteItem
+                - dynamodb:UpdateItem
+                - dynamodb:TransactWriteItems
+              Resource: !GetAtt AuthTable.Arn
+            - Effect: Allow
+              Action:
+                - cognito-idp:AdminInitiateAuth
+                - cognito-idp:AdminGetUser
+              Resource: !GetAtt StaffUserPool.Arn
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !Ref EdgeSecret
+      Events:
+        Bootstrap:
+          Type: HttpApi
+          Properties: { ApiId: !Ref AuthApi, Path: '/api/clinics/{slug}/bootstrap', Method: GET, PayloadFormatVersion: '2.0' }
+        Session:
+          Type: HttpApi
+          Properties: { ApiId: !Ref AuthApi, Path: '/api/clinics/{slug}/auth/session', Method: GET, PayloadFormatVersion: '2.0' }
+        Login:
+          Type: HttpApi
+          Properties: { ApiId: !Ref AuthApi, Path: '/api/clinics/{slug}/auth/login', Method: POST, PayloadFormatVersion: '2.0' }
+        Logout:
+          Type: HttpApi
+          Properties: { ApiId: !Ref AuthApi, Path: '/api/clinics/{slug}/auth/logout', Method: POST, PayloadFormatVersion: '2.0' }
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints: [handler.ts]
+        Format: esm
+        OutExtension: ['.js=.mjs']
+        Target: es2022
+        Minify: true
+        Sourcemap: false
+
+  AuthLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/clinicpluz-${StageName}-auth
+      RetentionInDays: 14
+
+Outputs:
+  ApiOrigin:
+    Value: !Sub https://${AuthApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}
+    Description: Use as CloudFront /api/* origin, with caching disabled and EdgeKey as an origin-only header
+  UserPoolId:
+    Value: !Ref StaffUserPool
+  UserPoolClientId:
+    Value: !Ref StaffUserPoolClient
+  AuthTableName:
+    Value: !Ref AuthTable
+  EdgeSecretArn:
+    Value: !Ref EdgeSecret
+    Description: Retrieve the value with restricted IAM to set CloudFront origin-only X-ClinicPluz-Edge-Key
