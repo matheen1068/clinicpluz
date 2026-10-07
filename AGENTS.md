@@ -15,6 +15,7 @@ Each handoff includes changed paths, the behavior proved, checks run, unresolved
 - Only authorized clinic staff use the product. Patients do not log in or book through it.
 - Clinic staff enter both phone bookings and walk-ins, assign doctor and slot, and check in walk-ins.
 - Each clinic has its own subdomain and staff login. A hostname is routing context, never proof of access. Enforce tenant isolation and role permissions on the server for every request.
+- Until a domain is purchased, the synthetic AWS staging demo may use `/clinic/<slug>/login/` on one CloudFront-assigned hostname. The path is also routing context, never proof of access. See `docs/DOMAIN_FREE_AWS_DEMO.md`.
 - No WhatsApp integration. Planned notifications use AWS SES when an email address is available.
 - Keep staging and production distinct. The owned domain, production identity design, database, and AWS deployment details are not yet finalized. Do not present local demo storage or test credentials as production ready.
 - Use synthetic records until clinical privacy, audit, backup, retention, and access controls are ready for real patient data.

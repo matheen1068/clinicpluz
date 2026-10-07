@@ -1,6 +1,6 @@
 # ClinicPluz local clinic authentication
 
-This service makes the clinic staff login work end-to-end **on a developer machine**. It handles only clinic identity, staff credentials, CSRF, and sessions. It has no patient records and is deliberately not an AWS/production identity provider. It refuses `NODE_ENV=production`, requires `CLINIC_AUTH_LOCAL_ONLY=1`, accepts only one-label `*.localhost` hosts on the configured public port, and listens only on `127.0.0.1`.
+This service makes the clinic staff login work end-to-end **on a developer machine**. It handles only clinic identity, staff credentials, CSRF, and sessions. It has no patient records and is deliberately not an AWS/production identity provider. It refuses `NODE_ENV=production`, requires `CLINIC_AUTH_LOCAL_ONLY=1`, accepts only one-label `*.localhost` or exact `localhost` hosts on the configured public port, and listens only on `127.0.0.1`.
 
 ## Local setup
 
@@ -30,14 +30,14 @@ Start the service:
 CLINIC_AUTH_LOCAL_ONLY=1 pnpm dev
 ```
 
-Then start the clinic frontend from `apps/clinic` and open `http://goodwell.localhost:5174/login/` or `http://blesswell.localhost:5174/login/`. Vite sends same-origin `/api` requests to this loopback service on port 8787 while preserving the clinic Host header. `CLINIC_PUBLIC_PORT` (default 5174) must match Vite's port; `CLINIC_AUTH_PORT` (default 8787) controls the loopback listener.
+Then start the clinic frontend from `apps/clinic` and open `http://goodwell.localhost:5174/login/` or `http://blesswell.localhost:5174/login/`. To test the domain-free path flow locally, use `http://localhost:5174/clinic/goodwell/login/` and `http://localhost:5174/clinic/blesswell/login/`. The frontend calls `/api/clinics/<slug>/bootstrap` and `/api/clinics/<slug>/auth/{session,login,logout}`. Vite sends same-origin `/api/*` requests to this loopback service on port 8787 while preserving the original Host header. `CLINIC_PUBLIC_PORT` (default 5174) must match Vite's port; `CLINIC_AUTH_PORT` (default 8787) controls the loopback listener.
 
 ## Local security behavior
 
-- The Host must be exactly `<clinic>.localhost:5174` (or the configured public port). Unsafe requests must have the exact matching Origin. Forwarded host headers are ignored.
+- The Host must be exactly `<clinic>.localhost:5174` or `localhost:5174` (or the configured public port). Unsafe requests must have the exact matching Origin. Forwarded host headers are ignored. A clinic subdomain must match the API path slug. On `localhost`, the API path slug selects the clinic but the authenticated session must also belong to that clinic.
 - Clinic discovery returns only the active clinic name. It creates a short-lived anonymous CSRF session in SQLite.
 - Passwords use per-user random salts and scrypt hashes. Login checks the user **within the host's clinic**. Five failed attempts for the same clinic username cause a 15-minute lock.
-- Successful login rotates from the anonymous session to a new opaque authenticated session. The browser gets a host-only, HttpOnly, SameSite=Lax cookie; the session is stored server-side for at most eight hours. The local HTTP cookie intentionally lacks `Secure`; no production cookie is issued by this service.
+- Successful login rotates from the anonymous session to a new opaque authenticated session. The browser gets a host-only, HttpOnly, SameSite=Lax cookie with a clinic-specific name, so two path-based clinics on `localhost` keep separate sessions. The session is stored server-side for at most eight hours. The local HTTP cookie intentionally lacks `Secure`; no production cookie is issued by this service.
 - Logout requires the authenticated CSRF token, deletes the server session, and clears the cookie. Disabling a staff account or clinic denies subsequent session requests. A cookie from one clinic cannot authorize another clinic.
 - Login and session endpoints do not return patient data. No access decision should be based on client-side role labels alone.
 

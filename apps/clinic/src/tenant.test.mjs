@@ -1,23 +1,45 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { resolveClinicSlug } from './tenant.ts';
+import { resolveClinicContext } from './tenant.ts';
 
-test('resolves exactly one clinic label for production and staging domains', () => {
-  assert.equal(resolveClinicSlug('goodwell.clinicpluz.com', 'clinicpluz.com', false), 'goodwell');
-  assert.equal(resolveClinicSlug('blesswell.staging.clinicpluz.com', 'staging.clinicpluz.com', false), 'blesswell');
-  assert.equal(resolveClinicSlug('goodwell.other.com', 'clinicpluz.com', false), null);
-  assert.equal(resolveClinicSlug('foo.bar.clinicpluz.com', 'clinicpluz.com', false), null);
+test('owned-domain login resolves exactly one clinic label', () => {
+  assert.deepEqual(resolveClinicContext('goodwell.clinicpluz.com', '/login/', 'clinicpluz.com', undefined, false),
+    { slug: 'goodwell', mode: 'subdomain' });
+  assert.deepEqual(resolveClinicContext('goodwell.clinicpluz.com', '/login', 'clinicpluz.com', undefined, false),
+    { slug: 'goodwell', mode: 'subdomain' });
+  assert.deepEqual(resolveClinicContext('blesswell.staging.clinicpluz.com', '/login/', 'staging.clinicpluz.com', undefined, false),
+    { slug: 'blesswell', mode: 'subdomain' });
+  assert.equal(resolveClinicContext('goodwell.other.com', '/login/', 'clinicpluz.com', undefined, false), null);
+  assert.equal(resolveClinicContext('foo.bar.clinicpluz.com', '/login/', 'clinicpluz.com', undefined, false), null);
+  assert.equal(resolveClinicContext('goodwell.clinicpluz.com', '/clinic/blesswell/login/', 'clinicpluz.com', undefined, false), null);
 });
 
-test('allows named localhost clinics for development only', () => {
-  assert.equal(resolveClinicSlug('goodwell.localhost', undefined, true), 'goodwell');
-  assert.equal(resolveClinicSlug('goodwell.localhost', undefined, false), null);
-  assert.equal(resolveClinicSlug('localhost', undefined, true), null);
+test('local development supports named subdomains and a path-based preview', () => {
+  assert.deepEqual(resolveClinicContext('goodwell.localhost', '/login/', undefined, undefined, true),
+    { slug: 'goodwell', mode: 'subdomain' });
+  assert.deepEqual(resolveClinicContext('localhost', '/clinic/blesswell/login/', undefined, undefined, true),
+    { slug: 'blesswell', mode: 'demo-path' });
+  assert.equal(resolveClinicContext('localhost', '/login/', undefined, undefined, true), null);
+  assert.equal(resolveClinicContext('goodwell.localhost', '/login/', undefined, undefined, false), null);
 });
 
-test('fails closed for reserved and malformed clinic names', () => {
-  for (const host of ['admin.clinicpluz.com', '-clinic.clinicpluz.com', 'clinic-.clinicpluz.com', 'foo.bar.clinicpluz.com', 'clinicpluz.com']) {
-    assert.equal(resolveClinicSlug(host, 'clinicpluz.com', false), null, host);
+test('an explicitly approved CloudFront default hostname accepts only the clinic path', () => {
+  assert.deepEqual(resolveClinicContext('d123abc.cloudfront.net', '/clinic/goodwell/login/', undefined, 'd123abc.cloudfront.net', false),
+    { slug: 'goodwell', mode: 'demo-path' });
+  assert.deepEqual(resolveClinicContext('d123abc.cloudfront.net', '/clinic/goodwell/login', undefined, 'd123abc.cloudfront.net', false),
+    { slug: 'goodwell', mode: 'demo-path' });
+  for (const host of ['dother.cloudfront.net', 'example.com']) {
+    assert.equal(resolveClinicContext(host, '/clinic/goodwell/login/', undefined, 'd123abc.cloudfront.net', false), null);
   }
-  assert.equal(resolveClinicSlug('goodwell.clinicpluz.com', undefined, false), null);
+  assert.equal(resolveClinicContext('d123abc.cloudfront.net', '/login/', undefined, 'd123abc.cloudfront.net', false), null);
+  assert.equal(resolveClinicContext('d123abc.cloudfront.net', '/clinic/goodwell/login/', undefined, undefined, false), null);
+  assert.equal(resolveClinicContext('d123abc.cloudfront.net', '/clinic/goodwell/login/', undefined, 'other.com', false), null);
+});
+
+test('reserved and malformed clinic names fail closed in every mode', () => {
+  for (const slug of ['admin', '-clinic', 'clinic-', 'foo/bar', 'foo.bar']) {
+    assert.equal(resolveClinicContext('d123abc.cloudfront.net', `/clinic/${slug}/login/`, undefined, 'd123abc.cloudfront.net', false), null, slug);
+  }
+  assert.equal(resolveClinicContext('admin.clinicpluz.com', '/login/', 'clinicpluz.com', undefined, false), null);
+  assert.equal(resolveClinicContext('clinicpluz.com', '/login/', 'clinicpluz.com', undefined, false), null);
 });

@@ -64,6 +64,7 @@ button:disabled { cursor: not-allowed; }
 
 .login-panel { min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; padding: 41px clamp(34px, 6.5vw, 112px) 28px; background: #f9fbf9; }
 .preview-banner { margin: 0 0 15px; padding: 10px 12px; color: #785b1f; border: 1px solid #efdba6; border-radius: 9px; background: #fff9e8; font-size: 11px; font-weight: 680; line-height: 1.5; }
+.demo-banner { margin: 0 0 18px; padding: 10px 12px; color: #305e61; border: 1px solid #c5e0df; border-radius: 9px; background: #edf8f7; font-size: 11px; font-weight: 680; line-height: 1.5; }
 .panel-top { display: flex; align-items: center; gap: 20px; color: #798e87; font-size: 11px; font-weight: 780; letter-spacing: .18em; }
 .panel-top-rule { height: 1px; width: 52px; background: #cadbd2; }
 .panel-center { width: min(100%, 460px); margin: auto; padding: 62px 0; }

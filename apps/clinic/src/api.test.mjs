@@ -20,24 +20,24 @@ test('bootstrap requires server-provided clinic identity and CSRF token', async 
     return Response.json({ clinic: { slug: 'goodwell', displayName: 'Goodwell Clinic' }, csrfToken: 'browser-csrf' });
   });
   try {
-    assert.equal((await getClinicBootstrap()).clinic.displayName, 'Goodwell Clinic');
+    assert.equal((await getClinicBootstrap('goodwell')).clinic.displayName, 'Goodwell Clinic');
   } finally { restore(); }
 
   restore = mockFetch(async () => Response.json({ clinic: { slug: 'goodwell' } }));
   try {
-    await assert.rejects(getClinicBootstrap(), ApiError);
+    await assert.rejects(getClinicBootstrap('goodwell'), ApiError);
   } finally { restore(); }
 });
 
 test('session is absent on 401 but does not become a fake session on service failure', async () => {
   let restore = mockFetch(async () => new Response(null, { status: 401 }));
   try {
-    assert.equal(await getStaffSession(), null);
+    assert.equal(await getStaffSession('goodwell'), null);
   } finally { restore(); }
 
   restore = mockFetch(async () => { throw new Error('offline'); });
   try {
-    await assert.rejects(getStaffSession(), ApiError);
+    await assert.rejects(getStaffSession('goodwell'), ApiError);
   } finally { restore(); }
 });
 
@@ -45,16 +45,23 @@ test('sign-in and sign-out use same-origin cookie requests and CSRF headers', as
   const calls = [];
   const restore = mockFetch(async (path, options) => {
     calls.push({ path, options });
-    return path === '/api/auth/login' ? Response.json(session) : new Response(null, { status: 204 });
+    return path === '/api/clinics/goodwell/auth/login' ? Response.json(session) : new Response(null, { status: 204 });
   });
   try {
-    assert.equal((await signIn('staff-a', 'private-password', 'browser-csrf')).user.id, 'staff-1');
-    await signOut(session.csrfToken);
-    assert.equal(calls[0].path, '/api/auth/login');
+    assert.equal((await signIn('goodwell', 'staff-a', 'private-password', 'browser-csrf')).user.id, 'staff-1');
+    await signOut('goodwell', session.csrfToken);
+    assert.equal(calls[0].path, '/api/clinics/goodwell/auth/login');
     assert.equal(calls[0].options.credentials, 'include');
     assert.equal(calls[0].options.headers['X-CSRF-Token'], 'browser-csrf');
     assert.deepEqual(JSON.parse(calls[0].options.body), { username: 'staff-a', password: 'private-password' });
-    assert.equal(calls[1].path, '/api/auth/logout');
+    assert.equal(calls[1].path, '/api/clinics/goodwell/auth/logout');
     assert.equal(calls[1].options.headers['X-CSRF-Token'], 'authenticated-csrf');
+  } finally { restore(); }
+});
+
+test('API paths stay under /api and reject an invalid clinic slug before fetching', async () => {
+  const restore = mockFetch(async () => { throw new Error('fetch should not be called'); });
+  try {
+    await assert.rejects(getClinicBootstrap('../blesswell'), ApiError);
   } finally { restore(); }
 });

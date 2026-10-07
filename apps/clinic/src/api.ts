@@ -79,21 +79,28 @@ async function request(path: string, init: RequestInit = {}): Promise<unknown> {
   }
 }
 
-export async function getClinicBootstrap(): Promise<ClinicBootstrap> {
-  return assertBootstrap(await request('/api/clinic/bootstrap'));
+function clinicPath(slug: string, endpoint: string): string {
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(slug) || endpoint.startsWith('/')) {
+    throw new ApiError(null, 'Invalid clinic request');
+  }
+  return `/api/clinics/${slug}/${endpoint}`;
 }
 
-export async function getStaffSession(): Promise<StaffSession | null> {
+export async function getClinicBootstrap(slug: string): Promise<ClinicBootstrap> {
+  return assertBootstrap(await request(clinicPath(slug, 'bootstrap')));
+}
+
+export async function getStaffSession(slug: string): Promise<StaffSession | null> {
   try {
-    return assertSession(await request('/api/auth/session'));
+    return assertSession(await request(clinicPath(slug, 'auth/session')));
   } catch (error) {
     if (error instanceof ApiError && error.status === 401) return null;
     throw error;
   }
 }
 
-export async function signIn(username: string, password: string, csrfToken: string): Promise<StaffSession> {
-  return assertSession(await request('/api/auth/login', {
+export async function signIn(slug: string, username: string, password: string, csrfToken: string): Promise<StaffSession> {
+  return assertSession(await request(clinicPath(slug, 'auth/login'), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -103,8 +110,8 @@ export async function signIn(username: string, password: string, csrfToken: stri
   }));
 }
 
-export async function signOut(csrfToken: string): Promise<void> {
-  await request('/api/auth/logout', {
+export async function signOut(slug: string, csrfToken: string): Promise<void> {
+  await request(clinicPath(slug, 'auth/logout'), {
     method: 'POST',
     headers: { 'X-CSRF-Token': csrfToken },
   });

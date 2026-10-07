@@ -20,10 +20,9 @@ function setup(path = ':memory:') {
   return { store, app: createClinicAuthApp(store, { publicPort: 5174 }), passwordA, passwordB };
 }
 
-function makeClient(app, slug) {
-  const host = `${slug}.localhost:5174`;
-  const jar = new Map();
-  async function call(path, { method = 'GET', json, csrf, origin = `http://${host}`, cookie } = {}) {
+function makeClient(app, slug, host = `${slug}.localhost:5174`, jar = new Map()) {
+  async function call(endpoint, { method = 'GET', json, csrf, origin = `http://${host}`, cookie, routeSlug = slug } = {}) {
+    const path = `/api/clinics/${routeSlug}/${endpoint}`;
     const headers = new Headers({ Host: host });
     if (method !== 'GET') headers.set('Origin', origin);
     if (json) headers.set('Content-Type', 'application/json');
@@ -47,16 +46,16 @@ test('local login requires clinic bootstrap, valid credentials, and a scoped coo
   const { store, app, passwordA } = setup();
   try {
     const client = makeClient(app, 'goodwell');
-    const before = await client.call('/api/auth/session');
+    const before = await client.call('auth/session');
     assert.equal(before.response.status, 401);
 
-    const bootstrap = await client.call('/api/clinic/bootstrap');
+    const bootstrap = await client.call('bootstrap');
     assert.equal(bootstrap.response.status, 200);
     assert.equal(bootstrap.body.clinic.displayName, 'Goodwell Clinic');
     assert.equal(bootstrap.body.clinic.slug, 'goodwell');
     assert.ok(bootstrap.response.headers.getSetCookie()[0].includes('HttpOnly'));
     assert.ok(!bootstrap.response.headers.getSetCookie()[0].includes('Domain='));
-    const loggedIn = await client.call('/api/auth/login', {
+    const loggedIn = await client.call('auth/login', {
       method: 'POST', csrf: bootstrap.body.csrfToken,
       json: { username: 'reception.a', password: passwordA },
     });
@@ -64,10 +63,10 @@ test('local login requires clinic bootstrap, valid credentials, and a scoped coo
     assert.equal(loggedIn.body.clinicSlug, 'goodwell');
     assert.equal(loggedIn.body.user.role, 'receptionist');
     assert.notEqual(loggedIn.body.csrfToken, bootstrap.body.csrfToken);
-    assert.equal(loggedIn.cookies.has('cpz_local_pre'), false);
-    assert.equal(loggedIn.cookies.has('cpz_local_session'), true);
+    assert.equal(loggedIn.cookies.has('cpz_local_pre_goodwell'), false);
+    assert.equal(loggedIn.cookies.has('cpz_local_session_goodwell'), true);
 
-    const session = await client.call('/api/auth/session');
+    const session = await client.call('auth/session');
     assert.equal(session.response.status, 200);
     assert.equal(session.body.user.id, loggedIn.body.user.id);
     assert.equal(session.body.csrfToken, loggedIn.body.csrfToken);
@@ -79,23 +78,23 @@ test('cross-clinic login and replayed session cookies are denied', async () => {
   try {
     const a = makeClient(app, 'goodwell');
     const b = makeClient(app, 'blesswell');
-    const aBootstrap = await a.call('/api/clinic/bootstrap');
-    const aLogin = await a.call('/api/auth/login', {
+    const aBootstrap = await a.call('bootstrap');
+    const aLogin = await a.call('auth/login', {
       method: 'POST', csrf: aBootstrap.body.csrfToken,
       json: { username: 'reception.a', password: passwordA },
     });
     assert.equal(aLogin.response.status, 200);
-    const stolenCookie = `cpz_local_session=${aLogin.cookies.get('cpz_local_session')}`;
-    const replay = await b.call('/api/auth/session', { cookie: stolenCookie });
+    const stolenCookie = `cpz_local_session_blesswell=${aLogin.cookies.get('cpz_local_session_goodwell')}`;
+    const replay = await b.call('auth/session', { cookie: stolenCookie });
     assert.equal(replay.response.status, 401);
 
-    const bBootstrap = await b.call('/api/clinic/bootstrap');
-    const foreignLogin = await b.call('/api/auth/login', {
+    const bBootstrap = await b.call('bootstrap');
+    const foreignLogin = await b.call('auth/login', {
       method: 'POST', csrf: bBootstrap.body.csrfToken,
       json: { username: 'reception.a', password: passwordA },
     });
     assert.equal(foreignLogin.response.status, 401);
-    const bLogin = await b.call('/api/auth/login', {
+    const bLogin = await b.call('auth/login', {
       method: 'POST', csrf: bBootstrap.body.csrfToken,
       json: { username: 'reception.b', password: passwordB },
     });
@@ -108,23 +107,23 @@ test('bad password, invalid CSRF, and wrong Origin cannot create a session', asy
   const { store, app, passwordA } = setup();
   try {
     const client = makeClient(app, 'goodwell');
-    const bootstrap = await client.call('/api/clinic/bootstrap');
-    const wrongCsrf = await client.call('/api/auth/login', {
+    const bootstrap = await client.call('bootstrap');
+    const wrongCsrf = await client.call('auth/login', {
       method: 'POST', csrf: randomBytes(20).toString('hex'),
       json: { username: 'reception.a', password: passwordA },
     });
     assert.equal(wrongCsrf.response.status, 403);
-    const wrongOrigin = await client.call('/api/auth/login', {
+    const wrongOrigin = await client.call('auth/login', {
       method: 'POST', csrf: bootstrap.body.csrfToken, origin: 'http://other.localhost:5174',
       json: { username: 'reception.a', password: passwordA },
     });
     assert.equal(wrongOrigin.response.status, 403);
-    const wrongPassword = await client.call('/api/auth/login', {
+    const wrongPassword = await client.call('auth/login', {
       method: 'POST', csrf: bootstrap.body.csrfToken,
       json: { username: 'reception.a', password: password() },
     });
     assert.equal(wrongPassword.response.status, 401);
-    assert.equal(client.jar.has('cpz_local_session'), false);
+    assert.equal(client.jar.has('cpz_local_session_goodwell'), false);
   } finally { store.close(); }
 });
 
@@ -132,18 +131,18 @@ test('logout requires current authenticated CSRF and invalidates the server sess
   const { store, app, passwordA } = setup();
   try {
     const client = makeClient(app, 'goodwell');
-    const bootstrap = await client.call('/api/clinic/bootstrap');
-    const login = await client.call('/api/auth/login', {
+    const bootstrap = await client.call('bootstrap');
+    const login = await client.call('auth/login', {
       method: 'POST', csrf: bootstrap.body.csrfToken,
       json: { username: 'reception.a', password: passwordA },
     });
     assert.equal(login.response.status, 200);
-    const wrong = await client.call('/api/auth/logout', { method: 'POST', csrf: bootstrap.body.csrfToken });
+    const wrong = await client.call('auth/logout', { method: 'POST', csrf: bootstrap.body.csrfToken });
     assert.equal(wrong.response.status, 403);
-    assert.equal((await client.call('/api/auth/session')).response.status, 200);
-    const logout = await client.call('/api/auth/logout', { method: 'POST', csrf: login.body.csrfToken });
+    assert.equal((await client.call('auth/session')).response.status, 200);
+    const logout = await client.call('auth/logout', { method: 'POST', csrf: login.body.csrfToken });
     assert.equal(logout.response.status, 204);
-    assert.equal((await client.call('/api/auth/session')).response.status, 401);
+    assert.equal((await client.call('auth/session')).response.status, 401);
   } finally { store.close(); }
 });
 
@@ -167,22 +166,22 @@ test('five failed passwords throttle that clinic username, then the lock expires
   const app = createClinicAuthApp(state.store, { publicPort: 5174, now: () => clock.now });
   try {
     const client = makeClient(app, 'goodwell');
-    const bootstrap = await client.call('/api/clinic/bootstrap');
+    const bootstrap = await client.call('bootstrap');
     for (let attempt = 0; attempt < 5; attempt += 1) {
-      const wrong = await client.call('/api/auth/login', {
+      const wrong = await client.call('auth/login', {
         method: 'POST', csrf: bootstrap.body.csrfToken,
         json: { username: 'reception.a', password: password() },
       });
       assert.equal(wrong.response.status, 401);
     }
-    const blocked = await client.call('/api/auth/login', {
+    const blocked = await client.call('auth/login', {
       method: 'POST', csrf: bootstrap.body.csrfToken,
       json: { username: 'reception.a', password: state.passwordA },
     });
     assert.equal(blocked.response.status, 429);
     clock.now += 15 * 60_000 + 1;
-    const fresh = await client.call('/api/clinic/bootstrap');
-    const allowed = await client.call('/api/auth/login', {
+    const fresh = await client.call('bootstrap');
+    const allowed = await client.call('auth/login', {
       method: 'POST', csrf: fresh.body.csrfToken,
       json: { username: 'reception.a', password: state.passwordA },
     });
@@ -196,29 +195,63 @@ test('deactivated staff and expired sessions lose access immediately', async () 
   const app = createClinicAuthApp(state.store, { publicPort: 5174, now: () => clock.now });
   try {
     const client = makeClient(app, 'goodwell');
-    const bootstrap = await client.call('/api/clinic/bootstrap');
-    const login = await client.call('/api/auth/login', {
+    const bootstrap = await client.call('bootstrap');
+    const login = await client.call('auth/login', {
       method: 'POST', csrf: bootstrap.body.csrfToken,
       json: { username: 'reception.a', password: state.passwordA },
     });
     assert.equal(login.response.status, 200);
     state.store.db.prepare('UPDATE staff SET active = 0 WHERE id = ?').run(login.body.user.id);
-    assert.equal((await client.call('/api/auth/session')).response.status, 401);
+    assert.equal((await client.call('auth/session')).response.status, 401);
     state.store.db.prepare('UPDATE staff SET active = 1 WHERE id = ?').run(login.body.user.id);
     clock.now += 8 * 60 * 60_000 + 1;
-    assert.equal((await client.call('/api/auth/session')).response.status, 401);
+    assert.equal((await client.call('auth/session')).response.status, 401);
   } finally { state.store.close(); }
 });
 
 test('unknown or disabled clinics and invalid hosts disclose no bootstrap', async () => {
   const { store, app } = setup();
   try {
-    assert.equal((await makeClient(app, 'unknown').call('/api/clinic/bootstrap')).response.status, 404);
+    assert.equal((await makeClient(app, 'unknown').call('bootstrap')).response.status, 404);
     store.db.prepare('UPDATE clinics SET active = 0 WHERE slug = ?').run('blesswell');
-    assert.equal((await makeClient(app, 'blesswell').call('/api/clinic/bootstrap')).response.status, 404);
+    assert.equal((await makeClient(app, 'blesswell').call('bootstrap')).response.status, 404);
     for (const host of ['admin.localhost:5174', 'goodwell.localhost:5175', 'foo.goodwell.localhost:5174']) {
-      const response = await app.handle(new Request('http://goodwell.localhost:5174/api/clinic/bootstrap', { headers: { Host: host } }));
+      const response = await app.handle(new Request('http://goodwell.localhost:5174/api/clinics/goodwell/bootstrap', { headers: { Host: host } }));
       assert.equal(response.status, 421, host);
     }
+  } finally { store.close(); }
+});
+
+test('one localhost demo host keeps path clinics separate and rejects host/path mismatch', async () => {
+  const { store, app, passwordA, passwordB } = setup();
+  try {
+    const sharedJar = new Map();
+    const a = makeClient(app, 'goodwell', 'localhost:5174', sharedJar);
+    const b = makeClient(app, 'blesswell', 'localhost:5174', sharedJar);
+    const aBootstrap = await a.call('bootstrap');
+    const bBootstrap = await b.call('bootstrap');
+    assert.equal(aBootstrap.body.clinic.slug, 'goodwell');
+    assert.equal(bBootstrap.body.clinic.slug, 'blesswell');
+    const aLogin = await a.call('auth/login', {
+      method: 'POST', csrf: aBootstrap.body.csrfToken,
+      json: { username: 'reception.a', password: passwordA },
+    });
+    assert.equal(aLogin.response.status, 200);
+    assert.equal((await b.call('auth/session')).response.status, 401);
+    const bLogin = await b.call('auth/login', {
+      method: 'POST', csrf: bBootstrap.body.csrfToken,
+      json: { username: 'reception.b', password: passwordB },
+    });
+    assert.equal(bLogin.response.status, 200);
+    assert.equal(sharedJar.has('cpz_local_session_goodwell'), true);
+    assert.equal(sharedJar.has('cpz_local_session_blesswell'), true);
+    assert.equal((await a.call('auth/session')).body.user.id, aLogin.body.user.id);
+    assert.equal((await b.call('auth/session')).body.user.id, bLogin.body.user.id);
+
+    const wrongHostPath = await makeClient(app, 'goodwell').call('auth/session', { routeSlug: 'blesswell' });
+    assert.equal(wrongHostPath.response.status, 403);
+    const stolenA = sharedJar.get('cpz_local_session_goodwell');
+    const replay = await b.call('auth/session', { cookie: `cpz_local_session_blesswell=${stolenA}` });
+    assert.equal(replay.response.status, 401);
   } finally { store.close(); }
 });

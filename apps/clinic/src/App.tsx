@@ -9,12 +9,12 @@ import {
   type ClinicRole,
   type StaffSession,
 } from './api';
-import { resolveClinicSlug } from './tenant';
+import { resolveClinicContext } from './tenant';
 
 type View =
   | { kind: 'checking' }
   | { kind: 'invalid-host' }
-  | { kind: 'unavailable' }
+  | { kind: 'unavailable'; previewAllowed: boolean }
   | { kind: 'sign-in'; bootstrap: ClinicBootstrap }
   | { kind: 'signed-in'; bootstrap: ClinicBootstrap; session: StaffSession };
 
@@ -27,11 +27,15 @@ const ROLE_LABELS: Record<ClinicRole, string> = {
   billing: 'Billing staff',
 };
 
-const clinicSlug = resolveClinicSlug(
+const clinicContext = resolveClinicContext(
   window.location.hostname,
+  window.location.pathname,
   import.meta.env.VITE_CLINIC_BASE_DOMAIN,
+  import.meta.env.VITE_DEMO_HOSTNAME,
   import.meta.env.DEV,
 );
+const clinicSlug = clinicContext?.slug ?? null;
+const showDesignPreview = import.meta.env.DEV || clinicContext?.mode === 'demo-path';
 
 function ClinicMark({ light = false }: { light?: boolean }) {
   return (
@@ -105,10 +109,10 @@ function SignInForm({ bootstrap, preview = false, onSuccess }: { bootstrap: Clin
     setError('');
     setBusy(true);
     try {
-      const verifiedBootstrap = preview ? await getClinicBootstrap() : bootstrap;
+      const verifiedBootstrap = preview ? await getClinicBootstrap(clinicSlug) : bootstrap;
       if (verifiedBootstrap.clinic.slug !== clinicSlug) throw new ApiError(null, 'Clinic mismatch');
-      const result = await signIn(username.trim(), password, verifiedBootstrap.csrfToken);
-      const confirmed = await getStaffSession();
+      const result = await signIn(clinicSlug, username.trim(), password, verifiedBootstrap.csrfToken);
+      const confirmed = await getStaffSession(clinicSlug);
       if (!confirmed || result.clinicSlug !== clinicSlug || confirmed.clinicSlug !== clinicSlug ||
           confirmed.user.id !== result.user.id) {
         throw new ApiError(null, 'The clinic session could not be verified');
@@ -177,8 +181,9 @@ function SignedInShell({ bootstrap, session, onSignedOut, onUnverified }: { boot
   async function handleSignOut() {
     setBusy(true);
     try {
-      await signOut(session.csrfToken);
-      const remaining = await getStaffSession();
+      if (!clinicSlug) throw new ApiError(null, 'Clinic link missing');
+      await signOut(clinicSlug, session.csrfToken);
+      const remaining = await getStaffSession(clinicSlug);
       if (remaining) throw new ApiError(null, 'Session was not closed');
       onSignedOut();
     } catch {
@@ -204,21 +209,24 @@ export default function App() {
   const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
-    if (!clinicSlug) return;
+    const slug = clinicSlug;
+    if (!slug) return;
     let active = true;
-    async function initialize() {
+    async function initialize(selectedSlug: string) {
       setView({ kind: 'checking' });
+      let bootstrapVerified = false;
       try {
-        const bootstrap = await getClinicBootstrap();
-        if (bootstrap.clinic.slug !== clinicSlug) throw new ApiError(null, 'Clinic mismatch');
-        const session = await getStaffSession();
-        if (session && session.clinicSlug !== clinicSlug) throw new ApiError(null, 'Clinic mismatch');
+        const bootstrap = await getClinicBootstrap(selectedSlug);
+        if (bootstrap.clinic.slug !== selectedSlug) throw new ApiError(null, 'Clinic mismatch');
+        bootstrapVerified = true;
+        const session = await getStaffSession(selectedSlug);
+        if (session && session.clinicSlug !== selectedSlug) throw new ApiError(null, 'Clinic mismatch');
         if (active) setView(session ? { kind: 'signed-in', bootstrap, session } : { kind: 'sign-in', bootstrap });
-      } catch {
-        if (active) setView({ kind: 'unavailable' });
+      } catch (error) {
+        if (active) setView({ kind: 'unavailable', previewAllowed: !bootstrapVerified && error instanceof ApiError && error.status === null });
       }
     }
-    void initialize();
+    void initialize(slug);
     return () => { active = false; };
   }, [reloadKey]);
 
@@ -228,10 +236,11 @@ export default function App() {
       <section className="login-panel" aria-label="Clinic staff access">
         <div className="panel-top"><span className="panel-top-label">STAFF PORTAL</span><span className="panel-top-rule" /></div>
         <div className="panel-center">
+          {clinicContext?.mode === 'demo-path' && <p className="demo-banner" role="status">ClinicPluz demo environment · Use synthetic data only</p>}
           {view.kind === 'sign-in' && <SignInForm bootstrap={view.bootstrap} onSuccess={(bootstrap, session) => setView({ kind: 'signed-in', bootstrap, session })} />}
-          {view.kind === 'signed-in' && <SignedInShell bootstrap={view.bootstrap} session={view.session} onSignedOut={() => setReloadKey((count) => count + 1)} onUnverified={() => setView({ kind: 'unavailable' })} />}
-          {view.kind === 'unavailable' && import.meta.env.DEV && clinicSlug && <SignInForm preview bootstrap={{ clinic: { slug: clinicSlug, displayName: `${clinicSlug[0].toUpperCase()}${clinicSlug.slice(1)} Clinic` }, csrfToken: '' }} onSuccess={(bootstrap, session) => setView({ kind: 'signed-in', bootstrap, session })} />}
-          {(view.kind === 'checking' || view.kind === 'invalid-host' || (view.kind === 'unavailable' && !import.meta.env.DEV)) && <StatusCard kind={view.kind} onRetry={() => setReloadKey((count) => count + 1)} />}
+          {view.kind === 'signed-in' && <SignedInShell bootstrap={view.bootstrap} session={view.session} onSignedOut={() => setReloadKey((count) => count + 1)} onUnverified={() => setView({ kind: 'unavailable', previewAllowed: false })} />}
+          {view.kind === 'unavailable' && view.previewAllowed && showDesignPreview && clinicSlug && <SignInForm preview bootstrap={{ clinic: { slug: clinicSlug, displayName: `${clinicSlug[0].toUpperCase()}${clinicSlug.slice(1)} Clinic` }, csrfToken: '' }} onSuccess={(bootstrap, session) => setView({ kind: 'signed-in', bootstrap, session })} />}
+          {(view.kind === 'checking' || view.kind === 'invalid-host' || (view.kind === 'unavailable' && (!view.previewAllowed || !showDesignPreview))) && <StatusCard kind={view.kind} onRetry={() => setReloadKey((count) => count + 1)} />}
         </div>
         <div className="panel-footer"><span>ClinicPluz</span><span>For authorized clinic staff only</span></div>
       </section>
