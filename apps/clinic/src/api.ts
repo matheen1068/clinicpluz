@@ -70,7 +70,13 @@ async function request(path: string, init: RequestInit = {}): Promise<unknown> {
     throw new ApiError(null, 'Clinic service is unavailable');
   }
 
-  if (!response.ok) throw new ApiError(response.status, 'Clinic request failed');
+  if (!response.ok) {
+    // A missing /api/* CloudFront behavior reaches S3 and returns an HTML/XML
+    // error. Do not mistake that for a deliberate rejection by the JSON API.
+    const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase();
+    const fromApi = contentType === 'application/json' || contentType?.endsWith('+json');
+    throw new ApiError(fromApi ? response.status : null, 'Clinic request failed');
+  }
   if (response.status === 204) return null;
   try {
     return await response.json();

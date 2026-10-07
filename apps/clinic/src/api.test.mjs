@@ -29,8 +29,8 @@ test('bootstrap requires server-provided clinic identity and CSRF token', async 
   } finally { restore(); }
 });
 
-test('session is absent on 401 but does not become a fake session on service failure', async () => {
-  let restore = mockFetch(async () => new Response(null, { status: 401 }));
+test('session is absent on JSON API 401 but does not become a fake session on service failure', async () => {
+  let restore = mockFetch(async () => Response.json({ error: 'Not signed in' }, { status: 401 }));
   try {
     assert.equal(await getStaffSession('goodwell'), null);
   } finally { restore(); }
@@ -38,6 +38,20 @@ test('session is absent on 401 but does not become a fake session on service fai
   restore = mockFetch(async () => { throw new Error('offline'); });
   try {
     await assert.rejects(getStaffSession('goodwell'), ApiError);
+  } finally { restore(); }
+});
+
+test('an S3-style error means the API is unavailable, while JSON clinic rejection remains explicit', async () => {
+  let restore = mockFetch(async () => new Response('<Error>AccessDenied</Error>', {
+    status: 403, headers: { 'Content-Type': 'application/xml' },
+  }));
+  try {
+    await assert.rejects(getClinicBootstrap('goodwell'), (error) => error instanceof ApiError && error.status === null);
+  } finally { restore(); }
+
+  restore = mockFetch(async () => Response.json({ error: 'Clinic disabled' }, { status: 403 }));
+  try {
+    await assert.rejects(getClinicBootstrap('goodwell'), (error) => error instanceof ApiError && error.status === 403);
   } finally { restore(); }
 });
 
