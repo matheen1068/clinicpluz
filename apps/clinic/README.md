@@ -1,6 +1,6 @@
 # ClinicPluz clinic staff app
 
-This is a fresh, standalone React/TypeScript/Vite clinic workspace. It is intentionally separate from the AI Studio prototype at repository root. This milestone contains the clinic-specific staff sign-in and a minimal authenticated shell; it has no patient data or clinic workflow screens yet.
+This is a fresh, standalone React/TypeScript/Vite clinic workspace, separate from the AI Studio prototype at repository root. It includes clinic-specific staff sign-in and the first reception workflow UI: patient search and registration, doctor selection, 30-minute phone bookings or walk-in check-ins, and a date queue. The workflow calls a real server API; it contains no bundled patient records or authentication bypass.
 
 ## Run locally
 
@@ -40,7 +40,13 @@ Supported initial roles are `clinic_admin`, `doctor`, `receptionist`, `nurse`, `
 
 The backend must validate the Host (or forwarded host from an explicitly trusted proxy) and verify that the authenticated staff member belongs to the clinic named by the API path. On an owned subdomain, it must also require the hostname clinic to match the API path clinic. On the approved CloudFront default host, the path slug is routing context only; session membership remains mandatory. A subdomain or path is never proof of access. Use an HttpOnly, Secure, SameSite cookie with no `Domain` attribute so it is host-only; a `__Host-` cookie with `Path=/` is suitable. For a shared demo host, keep sessions isolated per clinic in the server session store and use distinct cookie names or paths. Bind both pre-login and authenticated CSRF tokens to the browser's server-managed session and rotate on authentication. Do not expose tokens or credentials in URLs, localStorage, logs, or analytics. The client stores only transient in-memory UI state.
 
-The repository now includes a **local-only** backend that implements this contract for development. It is not an AWS deployment or production identity provider. Production login remains unavailable by design until that separate implementation is built and reviewed.
+The repository includes a **local-only** backend for development and a separate AWS staging authentication service. The user verified the Goodwell login on AWS staging; that is not production approval, and the clinical workflow is not live there yet. No real patient data belongs in staging.
+
+## Reception workflow contract
+
+The workflow is shown only to authenticated `clinic_admin`, `receptionist`, or `nurse` staff. The server must independently enforce role, clinic membership, and the `patient_intake` and `appointments` module entitlements. Other roles see no reception tools. Patient search sends a JSON `POST /api/workflow/clinics/<slug>/patients/search` with the authenticated CSRF token, keeping names and phones out of URLs. Registration, booking, doctor roster, and queue routes follow [`docs/CLINIC_WORKFLOW_V1.md`](../../docs/CLINIC_WORKFLOW_V1.md). The UI preserves booking details on a `409` conflict and reloads the queue; an uncertain network result is never automatically retried.
+
+The 09:30–18:30, 30-minute `Asia/Kolkata` schedule is provisional for a **synthetic pilot**. The last start is 18:00. Slot selection is a request, not a claim of availability; the server prevents conflicts. Clinic timezone, opening hours, holidays, and doctor schedules must eventually come from clinic configuration. The product owner reported creating Goodwell's synthetic intake and appointment entitlements; the workflow API has not verified them yet. CloudFront also needs a dedicated `/api/workflow/*` route before this API can be used. Do not enter real patient data or deploy the workflow until its backend and access boundary are reviewed.
 
 ## Checks
 

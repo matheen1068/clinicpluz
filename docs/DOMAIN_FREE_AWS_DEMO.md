@@ -1,6 +1,6 @@
 # Domain-free AWS clinic-login demo
 
-Status (2026-10-08): the product owner created a staging S3 bucket and CloudFront distribution and verified the Goodwell login design preview in the browser. This is a static preview only; the AWS authentication API is not connected. The repository has not created AWS resources.
+Status (2026-10-09): the product owner deployed the staging authentication stack, connected the CloudFront `/api/*` behavior, provisioned a synthetic Goodwell clinic and staff membership, and confirmed a real Goodwell sign-in in the browser. The authenticated Clinic App remains a placeholder workspace. The product owner also created a synthetic Blesswell clinic and observed `Clinic session mismatch` when using the Goodwell session on Blesswell's session endpoint. Sign-out, membership revocation, and a separate Blesswell login remain unverified. No real clinic or patient data is approved for this staging setup.
 
 Known staging values (non-secret): AWS Region `ap-south-1`, S3 bucket `clinicpluz-staging-web-01`, CloudFront hostname `dpq5w4kpcyvb4.cloudfront.net`.
 
@@ -34,16 +34,14 @@ The local `services/clinic-auth` SQLite service stays local-only and is never de
 ## Sequence
 
 1. Completed: make the Clinic App and local test service understand the temporary clinic path. Preserve `<slug>.localhost` development URLs and leave the final subdomain mode configurable.
-2. Partially completed: the product owner created the private S3 origin and CloudFront distribution, uploaded a build configured for the assigned hostname, and attached [`infra/cloudfront/clinic-spa-rewrite.js`](../infra/cloudfront/clinic-spa-rewrite.js) to the default S3 behavior. The next infrastructure slice is a same-origin `/api/*` route, Cognito staff pool, and managed tenant/session storage. The application AWS Region remains a deployment parameter; use `ap-south-1` for the current staging account.
-3. Deploy only after the stack, expected cost, IAM permissions, and environment inputs have been reviewed. Seed two synthetic clinics and staff accounts through a controlled setup path, never with committed passwords.
-4. Verify both login flows, cross-clinic denial, logout, expired/disabled sessions, MFA and password recovery, no API caching, and CloudWatch logs. Share the assigned CloudFront URL for the demo.
+2. Completed for the first clinic: the product owner created the private S3 origin and CloudFront distribution, uploaded a build configured for the assigned hostname, attached [`infra/cloudfront/clinic-spa-rewrite.js`](../infra/cloudfront/clinic-spa-rewrite.js), and routed same-origin `/api/*` to the auth API. The Cognito staff pool, DynamoDB auth table, and Lambda are deployed in `ap-south-1`.
+3. Completed for Goodwell only: one synthetic clinic, confirmed Cognito staff account, and matching membership were provisioned; the product owner verified sign-in. Blesswell and automated provisioning are not complete.
+4. Cross-clinic session denial passed for a Goodwell session sent to the Blesswell path. Next verification: logout, expired/disabled sessions, no API caching, and CloudWatch logs. A separate Blesswell staff login is not yet tested. MFA and password recovery are not implemented and are prerequisites for a real-clinic pilot.
 5. After a domain is purchased, add DNS and ACM certificates, route wildcard clinic subdomains, and enforce a hostname/path consistency check during migration.
 
-## User inputs needed before deployment
+## Current handoff
 
-- AWS account access path for deploying the authentication stack. The staging Region is confirmed as `ap-south-1`.
-- Whether the AWS deployment will be made by the product owner or by the coordinating chat after review.
-- A name for the first synthetic demo clinic. No real staff or patient details are needed.
+The Goodwell staging deployment was performed by the product owner. The CommonJS Lambda packaging fix was also applied in CloudShell; reconcile the corresponding local Git commit with GitHub before the next deployment. Continue with synthetic data only and record results of the remaining isolation tests.
 
 Do not send access keys, client secrets, or passwords in chat.
 

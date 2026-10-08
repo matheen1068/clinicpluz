@@ -10,6 +10,7 @@ import {
   type StaffSession,
 } from './api';
 import { resolveClinicContext } from './tenant';
+import Workflow from './Workflow';
 
 type View =
   | { kind: 'checking' }
@@ -195,11 +196,8 @@ function SignedInShell({ bootstrap, session, onSignedOut, onUnverified }: { boot
 
   return (
     <div className="workspace-shell">
-      <div className="workspace-topline"><span className="eyebrow">CLINIC WORKSPACE</span><span className="session-badge">● Secure session</span></div>
-      <h2>Welcome, {session.user.displayName}</h2>
-      <p className="workspace-subtitle">You’re signed in to <strong>{bootstrap.clinic.displayName}</strong> as {ROLE_LABELS[session.user.role]}.</p>
-      <div className="workspace-placeholder"><span className="placeholder-icon" aria-hidden="true">✳</span><h3>Your workspace is taking shape</h3><p>Clinic tools will appear here when they are ready for your team.</p></div>
-      <button className="secondary-button" type="button" onClick={handleSignOut} disabled={busy}>{busy ? 'Signing out…' : 'Sign out'} <ArrowIcon /></button>
+      <header className="workspace-header"><div><span className="eyebrow">CLINIC WORKSPACE</span><h2>{bootstrap.clinic.displayName}</h2><p className="workspace-subtitle">Signed in as <strong>{session.user.displayName}</strong> · {ROLE_LABELS[session.user.role]}</p></div><div className="workspace-header-actions"><span className="session-badge">● Secure session</span><button className="secondary-button" type="button" onClick={handleSignOut} disabled={busy}>{busy ? 'Signing out…' : 'Sign out'} <ArrowIcon /></button></div></header>
+      <Workflow clinicSlug={session.clinicSlug} csrfToken={session.csrfToken} role={session.user.role} onSessionLost={onUnverified} />
     </div>
   );
 }
@@ -231,8 +229,8 @@ export default function App() {
   }, [reloadKey]);
 
   return (
-    <main className="app-layout">
-      <BrandStory />
+    <main className={`app-layout${view.kind === 'signed-in' ? ' app-layout--workspace' : ''}`}>
+      {view.kind !== 'signed-in' && <BrandStory />}
       <section className="login-panel" aria-label="Clinic staff access">
         <div className="panel-top"><span className="panel-top-label">STAFF PORTAL</span><span className="panel-top-rule" /></div>
         <div className="panel-center">

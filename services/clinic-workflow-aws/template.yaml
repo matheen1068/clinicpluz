@@ -1,0 +1,150 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: ClinicPluz synthetic staging reception workflow API (no real patient data)
+
+Parameters:
+  StageName:
+    Type: String
+    Default: staging
+    AllowedPattern: '[a-z][a-z0-9-]{1,30}'
+  PublicOrigin:
+    Type: String
+    Description: Exact CloudFront distribution origin that hosts the Clinic App
+    AllowedPattern: 'https://[a-z0-9-]+\.cloudfront\.net'
+  AuthTableName:
+    Type: String
+    Description: AuthTableName output from clinic-auth-aws
+  StaffUserPoolId:
+    Type: String
+    Description: UserPoolId output from clinic-auth-aws
+  StaffUserPoolArn:
+    Type: String
+    Description: ARN of the same clinic staff user pool
+
+Resources:
+  WorkflowEdgeSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: Random CloudFront-to-workflow origin-only header value
+      GenerateSecretString:
+        PasswordLength: 48
+        ExcludePunctuation: true
+
+  ClinicalTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub clinicpluz-${StageName}-clinical
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  WorkflowApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: '$default'
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 20
+        ThrottlingRateLimit: 10
+
+  WorkflowFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub clinicpluz-${StageName}-workflow
+      CodeUri: .
+      Handler: handler.handler
+      Runtime: nodejs22.x
+      Architectures: [arm64]
+      MemorySize: 256
+      Timeout: 10
+      Environment:
+        Variables:
+          AUTH_TABLE: !Ref AuthTableName
+          CLINICAL_TABLE: !Ref ClinicalTable
+          STAFF_USER_POOL_ID: !Ref StaffUserPoolId
+          PUBLIC_ORIGIN: !Ref PublicOrigin
+          EDGE_SECRET_ARN: !Ref WorkflowEdgeSecret
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+              Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AuthTableName}
+              Condition:
+                'ForAllValues:StringLike':
+                  'dynamodb:LeadingKeys': ['SESSION#*', 'CLINIC#*']
+                'Null':
+                  'dynamodb:LeadingKeys': 'false'
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:Query
+                - dynamodb:PutItem
+                - dynamodb:ConditionCheckItem
+              Resource: !GetAtt ClinicalTable.Arn
+              Condition:
+                'ForAllValues:StringLike':
+                  'dynamodb:LeadingKeys': ['CLINIC#*']
+                'Null':
+                  'dynamodb:LeadingKeys': 'false'
+            - Effect: Allow
+              Action:
+                - cognito-idp:AdminGetUser
+              Resource: !Ref StaffUserPoolArn
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref WorkflowEdgeSecret
+      Events:
+        Doctors:
+          Type: HttpApi
+          Properties: { ApiId: !Ref WorkflowApi, Path: '/api/workflow/clinics/{slug}/doctors', Method: GET, PayloadFormatVersion: '2.0' }
+        SearchPatients:
+          Type: HttpApi
+          Properties: { ApiId: !Ref WorkflowApi, Path: '/api/workflow/clinics/{slug}/patients/search', Method: POST, PayloadFormatVersion: '2.0' }
+        RegisterPatient:
+          Type: HttpApi
+          Properties: { ApiId: !Ref WorkflowApi, Path: '/api/workflow/clinics/{slug}/patients', Method: POST, PayloadFormatVersion: '2.0' }
+        ListAppointments:
+          Type: HttpApi
+          Properties: { ApiId: !Ref WorkflowApi, Path: '/api/workflow/clinics/{slug}/appointments', Method: GET, PayloadFormatVersion: '2.0' }
+        BookAppointment:
+          Type: HttpApi
+          Properties: { ApiId: !Ref WorkflowApi, Path: '/api/workflow/clinics/{slug}/appointments', Method: POST, PayloadFormatVersion: '2.0' }
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints: [handler.ts]
+        Format: cjs
+        OutExtension: ['.js=.cjs']
+        Target: es2022
+        Minify: true
+        Sourcemap: false
+
+  WorkflowLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/clinicpluz-${StageName}-workflow
+      RetentionInDays: 14
+
+Outputs:
+  ApiOrigin:
+    Value: !Sub https://${WorkflowApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}
+  ClinicalTableName:
+    Value: !Ref ClinicalTable
+  WorkflowEdgeSecretArn:
+    Value: !Ref WorkflowEdgeSecret
+    Description: Configure only as a CloudFront origin custom header for /api/workflow/*

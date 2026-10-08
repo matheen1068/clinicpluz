@@ -1,6 +1,6 @@
 # ClinicPluz staging clinic authentication API
 
-This is a **new AWS staging implementation** of the Clinic App's four same-origin endpoints. It is separate from `services/clinic-auth`, which remains local-only SQLite. This service has not been deployed or connected to CloudFront. It is for two synthetic clinics and staff accounts only; do not enter patient data or invite real clinic staff yet.
+This is the **AWS staging implementation** of the Clinic App's four same-origin endpoints. It is separate from `services/clinic-auth`, which remains local-only SQLite. The product owner deployed it behind CloudFront and verified Goodwell sign-in on 2026-10-09. It is for synthetic clinics and staff accounts only; do not enter patient data or invite real clinic staff yet.
 
 ## What it does
 
@@ -23,7 +23,7 @@ The API Gateway endpoint is public at the network layer. Lambda requires an orig
 
 **Required CloudFront handoff:** point a separate `/api/*` behavior at the HTTP API `ApiOrigin` output, allow POST as well as GET, disable caching, and forward cookies, `Origin`, `Content-Type`, and `X-CSRF-Token`. With `AllViewerExceptHostHeader`, API Gateway receives its own Host. Install the generated edge key as a CloudFront origin custom header (never a browser header or repository value). Keep the S3 static behavior separate. No CORS access is needed because the Clinic App calls the same CloudFront origin. If `/api/*` falls back to the S3 SPA, the client rejects the non-JSON response and does not sign in, but this must be checked during integration.
 
-The current deployment can use `https://dpq5w4kpcyvb4.cloudfront.net` as the `PublicOrigin` parameter. From this directory, once dependencies and the AWS SAM CLI are installed, build and review the stack with `sam build` and `sam validate`. Deploy only after the coordinating chat reviews the stack, costs, IAM, public API origin, CloudFront behavior and synthetic data plan. The AWS application Region is chosen with the deployment command (for staging, `ap-south-1`). No command in this repository creates resources automatically.
+The deployed staging stack uses `https://dpq5w4kpcyvb4.cloudfront.net` as the `PublicOrigin` parameter in `ap-south-1`. From this directory, build and review changes with `sam build` and `sam validate` before any further deployment. The AWS application Region is chosen with the deployment command. No command in this repository creates resources automatically.
 
 ## Synthetic clinic and staff setup
 
@@ -39,7 +39,7 @@ Control Panel clinic/user provisioning remains a separate future boundary. This 
 
 ## Checks and current limits
 
-Node.js 24 is required to run the source-level tests (`node --experimental-strip-types --test test/*.test.mjs`). They exercise the pure authentication logic with in-memory fakes: two-clinic path denial, cookies, CSRF, bad credentials and throttle, Cognito challenge refusal, revocation, expiry, and the HTTP API v2 event adapter. The Lambda itself is transpiled for the Node.js 22 AWS runtime. Run `pnpm install`, `pnpm typecheck`, `pnpm test`, and `sam validate` in a network-enabled development environment before deployment. The AWS SDK dependencies and SAM CLI were not available in the current sandbox, so the concrete AWS adapter, package bundle, CloudFormation transform, and live CloudFront flow remain **unverified** here.
+Node.js 24 is required to run the source-level tests (`node --experimental-strip-types --test test/*.test.mjs`). They exercise the pure authentication logic with in-memory fakes: two-clinic path denial, cookies, CSRF, bad credentials and throttle, Cognito challenge refusal, revocation, expiry, and the HTTP API v2 event adapter. The Lambda itself is transpiled for the Node.js 22 AWS runtime. The product owner ran `sam validate`, `sam build`, and `npm run typecheck` in CloudShell; after switching the esbuild output to CommonJS, the live Goodwell bootstrap and sign-in succeeded. Cross-clinic, logout, revocation, and expiry behavior still need live verification. CloudShell's Node 20 cannot run this repository's source-level test command; use Node 24 for it.
 
 Before inviting real clinic staff, add MFA/password recovery UX, a trusted owned-domain routing design, a controlled provisioning flow, audit events, WAF/rate policy, secret rotation, backup/restore verification, and operational alarms. Every future clinical endpoint must independently enforce clinic membership, role and module entitlement; this auth service does not authorize patient records.
 
