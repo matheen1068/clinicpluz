@@ -132,8 +132,10 @@ Resources:
       BuildMethod: esbuild
       BuildProperties:
         EntryPoints: [handler.ts]
-        Format: esm
-        OutExtension: ['.js=.mjs']
+        # The bundled AWS SDK contains CommonJS requires of Node built-ins.
+        # Emit a CommonJS handler so Lambda can load those dependencies.
+        Format: cjs
+        OutExtension: ['.js=.cjs']
         Target: es2022
         Minify: true
         Sourcemap: false
