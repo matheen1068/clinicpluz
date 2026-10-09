@@ -1,11 +1,14 @@
 import {
   DynamoDBClient, GetItemCommand, QueryCommand, TransactWriteItemsCommand, type AttributeValue,
+  type TransactWriteItem,
 } from '@aws-sdk/client-dynamodb';
 import { CognitoIdentityProviderClient, AdminGetUserCommand } from '@aws-sdk/client-cognito-identity-provider';
 import type {
   Appointment, AuthStore, Clinic, Doctor, Entitlements, Membership, Patient,
   Role, Session, StaffIdentity, WorkflowStore, Sex, Source, AppointmentStatus, Schedule,
 } from './core.js';
+import type { Encounter } from './consultation.js';
+import { randomUUID } from 'node:crypto';
 
 type Item = Record<string, AttributeValue>;
 const s = (value: string): AttributeValue => ({ S: value });
@@ -36,6 +39,9 @@ function bool(item: Item, name: string): boolean {
   if (typeof value !== 'boolean') throw new Error(`Invalid ${name}`);
   return value;
 }
+function optionalBool(item: Item, name: string): boolean {
+  return item[name] === undefined ? false : bool(item, name);
+}
 function patient(item: Item): Patient {
   const sex = string(item, 'sex') as Sex;
   if (!sexes.has(sex)) throw new Error('Invalid sex');
@@ -48,7 +54,9 @@ function patientFields(value: Patient): Item {
     registeredAt: s(value.registeredAt) };
 }
 function doctor(item: Item): Doctor {
-  return { id: string(item, 'id'), displayName: string(item, 'displayName'), active: bool(item, 'active') };
+  const staffSub = (item.staffSub as { S?: string } | undefined)?.S;
+  return { id: string(item, 'id'), displayName: string(item, 'displayName'), active: bool(item, 'active'),
+    ...(staffSub ? { staffSub } : {}) };
 }
 function appointment(item: Item): Appointment {
   const source = string(item, 'source') as Source;
@@ -77,7 +85,7 @@ export class DynamoAuthStore implements AuthStore {
     const item = await this.get(`CLINIC#${slug}`, 'META');
     if (!item) return null;
     if (string(item, 'slug') !== slug) throw new Error('Clinic key mismatch');
-    return { slug, active: bool(item, 'active') };
+    return { slug, active: bool(item, 'active'), displayName: string(item, 'displayName') };
   }
   async getMembership(slug: string, username: string): Promise<Membership | null> {
     const item = await this.get(`CLINIC#${slug}`, `STAFF#${username}`);
@@ -87,7 +95,7 @@ export class DynamoAuthStore implements AuthStore {
       throw new Error('Membership key mismatch');
     }
     return { clinicSlug: slug, username, cognitoUsername: string(item, 'cognitoUsername'),
-      sub: string(item, 'sub'), role, active: bool(item, 'active') };
+      sub: string(item, 'sub'), role, active: bool(item, 'active'), displayName: string(item, 'displayName') };
   }
   async getEntitlements(slug: string): Promise<Entitlements | null> {
     const item = await this.get(`CLINIC#${slug}`, 'ENTITLEMENTS');
@@ -95,7 +103,8 @@ export class DynamoAuthStore implements AuthStore {
     if (string(item, 'clinicSlug') !== slug) throw new Error('Entitlement key mismatch');
     const map = (item.modules as { M?: Item } | undefined)?.M;
     if (!map) throw new Error('Invalid entitlements');
-    return { clinicSlug: slug, patient_intake: bool(map, 'patient_intake'), appointments: bool(map, 'appointments') };
+    return { clinicSlug: slug, patient_intake: bool(map, 'patient_intake'),
+      appointments: bool(map, 'appointments'), consultations: optionalBool(map, 'consultations') };
   }
 }
 
@@ -105,7 +114,8 @@ export class CognitoStaffStatus implements StaffIdentity {
     try {
       const user = await this.client.send(new AdminGetUserCommand({ UserPoolId: this.userPoolId, Username: username }));
       return Boolean(user.Enabled && user.UserStatus === 'CONFIRMED' &&
-        user.UserAttributes?.some((attribute) => attribute.Name === 'sub' && attribute.Value === sub));
+        user.UserAttributes?.some((attribute: { Name?: string; Value?: string }) =>
+          attribute.Name === 'sub' && attribute.Value === sub));
     } catch (error) {
       if (error instanceof Error && error.name === 'UserNotFoundException') return false;
       throw error;
@@ -213,6 +223,87 @@ export class DynamoWorkflowStore implements WorkflowStore {
         const reasons = (error as Error & { CancellationReasons?: Array<{ Code?: string }> }).CancellationReasons;
         if (reasons?.[2]?.Code === 'ConditionalCheckFailed' &&
             reasons.every((reason, index) => index === 2 || !reason.Code || reason.Code === 'None')) return false;
+      }
+      throw error;
+    }
+  }
+  async getEncounter(slug: string, clinicDate: string, appointmentId: string): Promise<Encounter | null> {
+    const item = await this.get(`CLINIC#${slug}#ENCOUNTERS#${clinicDate}`, `APPOINTMENT#${appointmentId}`);
+    if (!item) return null;
+    const parsed: unknown = JSON.parse(string(item, 'document'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Invalid encounter');
+    const encounter = parsed as Encounter;
+    if (encounter.appointmentId !== appointmentId || encounter.clinicDate !== clinicDate ||
+        encounter.patientId !== string(item, 'patientId') || encounter.doctorId !== string(item, 'doctorId') ||
+        encounter.revision !== integer(item, 'revision') || encounter.status !== string(item, 'status') ||
+        (encounter.status !== 'draft' && encounter.status !== 'finalized') ||
+        (encounter.status === 'finalized' && (!encounter.finalizedAt || !encounter.finalizedBySub ||
+          !encounter.finalizedByDisplayName || encounter.finalizedDoctorId !== encounter.doctorId)) ||
+        !encounter.note || !Array.isArray(encounter.medications)) throw new Error('Invalid encounter');
+    return encounter;
+  }
+  async listEncounterStatuses(slug: string, clinicDate: string): Promise<Map<string, 'draft' | 'finalized'>> {
+    const rows = await this.query(`CLINIC#${slug}#ENCOUNTERS#${clinicDate}`, 'APPOINTMENT#', 200);
+    const statuses = new Map<string, 'draft' | 'finalized'>();
+    for (const row of rows) {
+      const status = string(row, 'status');
+      if (status !== 'draft' && status !== 'finalized') throw new Error('Invalid encounter status');
+      statuses.set(string(row, 'appointmentId'), status);
+    }
+    return statuses;
+  }
+  async saveEncounter(slug: string, appointment: Appointment, encounter: Encounter,
+    expectedRevision: number, actorSub: string, action: 'vitals.saved' | 'draft.saved' | 'encounter.finalized',
+    assignedDoctorSub?: string): Promise<boolean> {
+    const checks: TransactWriteItem[] = [
+      { ConditionCheck: { TableName: this.table,
+        Key: { pk: s(`CLINIC#${slug}#APPOINTMENTS#${appointment.clinicDate}`),
+          sk: s(`AT#${appointment.startUtc}#${appointment.id}`) },
+        ConditionExpression: 'attribute_exists(pk) AND #id = :id AND patientId = :patient AND doctorId = :doctor',
+        ExpressionAttributeNames: { '#id': 'id' },
+        ExpressionAttributeValues: { ':id': s(appointment.id), ':patient': s(appointment.patientId),
+          ':doctor': s(appointment.doctorId) },
+      } },
+      { ConditionCheck: { TableName: this.table,
+        Key: { pk: s(`CLINIC#${slug}#PATIENTS`), sk: s(`PATIENT#${appointment.patientId}`) },
+        ConditionExpression: 'attribute_exists(pk)',
+      } },
+    ];
+    if (assignedDoctorSub) {
+      checks.push({ ConditionCheck: { TableName: this.table,
+        Key: { pk: s(`CLINIC#${slug}#DOCTORS`), sk: s(`DOCTOR#${appointment.doctorId}`) },
+        ConditionExpression: 'attribute_exists(pk) AND #active = :active AND staffSub = :sub',
+        ExpressionAttributeNames: { '#active': 'active' },
+        ExpressionAttributeValues: { ':active': b(true), ':sub': s(assignedDoctorSub) },
+      } });
+    }
+    const encounterWriteIndex = checks.length;
+    const condition = expectedRevision === 0 ? 'attribute_not_exists(pk)' : '#revision = :expected AND #status = :draft';
+    const conditionNames = expectedRevision === 0 ? undefined : { '#revision': 'revision', '#status': 'status' };
+    const conditionValues = expectedRevision === 0 ? undefined : { ':expected': n(expectedRevision), ':draft': s('draft') };
+    const at = encounter.updatedAt ?? new Date().toISOString();
+    try {
+      await this.client.send(new TransactWriteItemsCommand({ TransactItems: [
+        ...checks,
+        { Put: { TableName: this.table, Item: {
+          pk: s(`CLINIC#${slug}#ENCOUNTERS#${encounter.clinicDate}`),
+          sk: s(`APPOINTMENT#${encounter.appointmentId}`),
+          appointmentId: s(encounter.appointmentId), patientId: s(encounter.patientId), doctorId: s(encounter.doctorId),
+          status: s(encounter.status), revision: n(encounter.revision), document: s(JSON.stringify(encounter)),
+        }, ConditionExpression: condition, ExpressionAttributeNames: conditionNames,
+        ExpressionAttributeValues: conditionValues } },
+        { Put: { TableName: this.table, Item: {
+          pk: s(`CLINIC#${slug}#AUDIT`), sk: s(`${at}#${randomUUID()}`),
+          action: s(action), actorSub: s(actorSub), targetId: s(encounter.appointmentId),
+          at: s(at), revision: n(encounter.revision),
+        }, ConditionExpression: 'attribute_not_exists(pk)' } },
+      ] }));
+      return true;
+    } catch (error) {
+      if (error instanceof Error && error.name === 'TransactionCanceledException') {
+        const reasons = (error as Error & { CancellationReasons?: Array<{ Code?: string }> }).CancellationReasons;
+        if (reasons?.[encounterWriteIndex]?.Code === 'ConditionalCheckFailed' &&
+            reasons.every((reason, index) => index === encounterWriteIndex || !reason.Code || reason.Code === 'None')) return false;
       }
       throw error;
     }

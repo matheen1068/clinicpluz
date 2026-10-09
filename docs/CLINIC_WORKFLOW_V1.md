@@ -1,6 +1,6 @@
 # Clinic App first workflow — implementation contract
 
-Status: first synthetic staging slice. The product owner is reviewing clinic-specific details; do not deploy or enter real patient data yet.
+Status: first synthetic staging slice deployed to the Goodwell demo on 2026-10-10. The product owner verified the flow described below. This is not approval for real patient data or production use.
 
 ## User flow
 
@@ -26,9 +26,13 @@ For this first reception workflow, `clinic_admin`, `receptionist`, and `nurse` m
 
 ## Security and data boundary
 
-Use the clinic slug only as context. Every request must recheck the server-side session, active clinic, active staff membership and role; clinical routes must also enforce the relevant module entitlement on the server. A missing entitlement record fails closed. Keep clinical records in a dedicated data store keyed by clinic and do not put patient details in the auth table. On 2026-10-09 the product owner reported creating Goodwell's synthetic `patient_intake` and `appointments` entitlement item; its effect has not yet been tested against the workflow API. Use only synthetic patients and doctors until real-clinic privacy, audit, backups, recovery, and access controls are ready.
+Use the clinic slug only as context. Every request must recheck the server-side session, active clinic, active staff membership and role; clinical routes must also enforce the relevant module entitlement on the server. A missing entitlement record fails closed. Keep clinical records in a dedicated data store keyed by clinic and do not put patient details in the auth table. Goodwell's synthetic `patient_intake` and `appointments` entitlements were exercised in the staging smoke test below. Use only synthetic patients and doctors until real-clinic privacy, audit, backups, recovery, and access controls are ready.
 
-The existing CloudFront `/api/*` behavior points to the authentication API. A separately deployed workflow API will require a more specific `/api/workflow/*` behavior targeting its own origin; otherwise workflow requests will reach the auth API and fail. Forward the existing staff cookie, `Origin`, `Content-Type`, and `X-CSRF-Token`; disable caching. Keep the CloudFront-to-origin secret out of browser code and source control. No workflow resource is authorized for deployment until its template and access boundary are reviewed.
+The CloudFront `/api/*` behavior points to the authentication API. The more specific `/api/workflow/*` behavior points to the workflow API and must remain above `/api/*` in behavior order. Forward the existing staff cookie, `Origin`, `Content-Type`, and `X-CSRF-Token`; disable caching. The two API origins use the same `X-ClinicPluz-Edge-Key` header name but different secret values. Keep those values out of browser code and source control. This staging deployment is not production approval.
+
+## Goodwell staging smoke test — 2026-10-10
+
+The product owner reported and showed the authenticated clinic workspace, a doctor-roster response containing the synthetic doctor, a successful phone booking visible in the date queue after page refresh, rejection of a second booking for the same doctor and slot, and `401 Not signed in` from the workflow API after sign-out. These checks show the first reception flow functioning on the staging CloudFront host. They do not establish two-clinic isolation, full role coverage, disaster recovery, or readiness for real patient records. Avoid storing real names, phone numbers, or clinical details in this synthetic environment.
 
 ## Open product details
 

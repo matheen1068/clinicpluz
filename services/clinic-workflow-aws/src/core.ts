@@ -1,14 +1,16 @@
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
+import { EMPTY_NOTE, medicationForDisplay, parseMedications, parseNote, parseVitals, readyToFinalize,
+  type Encounter } from './consultation.ts';
 
 export type Role = 'clinic_admin' | 'doctor' | 'receptionist' | 'nurse' | 'lab_tech' | 'billing';
 export type Sex = 'female' | 'male' | 'other' | 'undisclosed';
 export type Source = 'phone' | 'walk_in';
 export type AppointmentStatus = 'booked' | 'checked_in';
 export interface Session { clinicSlug: string; username: string; sub: string; csrfToken: string; expiresAt: number }
-export interface Clinic { slug: string; active: boolean }
-export interface Membership { clinicSlug: string; username: string; cognitoUsername: string; sub: string; role: Role; active: boolean }
-export interface Entitlements { clinicSlug: string; patient_intake: boolean; appointments: boolean }
-export interface Doctor { id: string; displayName: string; active: boolean }
+export interface Clinic { slug: string; active: boolean; displayName?: string }
+export interface Membership { clinicSlug: string; username: string; cognitoUsername: string; sub: string; role: Role; active: boolean; displayName?: string }
+export interface Entitlements { clinicSlug: string; patient_intake: boolean; appointments: boolean; consultations: boolean }
+export interface Doctor { id: string; displayName: string; active: boolean; staffSub?: string }
 export interface Schedule { timezone: string; openMinute: number; closeMinute: number; slotMinutes: number }
 export interface Patient {
   id: string; fullName: string; phone: string; ageYears: number; sex: Sex;
@@ -35,6 +37,11 @@ export interface WorkflowStore {
   createPatient(slug: string, patient: Patient, nameKey: string, phoneKey: string, actorSub: string): Promise<void>;
   listAppointments(slug: string, clinicDate: string): Promise<Appointment[]>;
   createAppointment(slug: string, appointment: Appointment): Promise<boolean>;
+  getEncounter(slug: string, clinicDate: string, appointmentId: string): Promise<Encounter | null>;
+  listEncounterStatuses(slug: string, clinicDate: string): Promise<Map<string, 'draft' | 'finalized'>>;
+  saveEncounter(slug: string, appointment: Appointment, encounter: Encounter,
+    expectedRevision: number, actorSub: string, action: 'vitals.saved' | 'draft.saved' | 'encounter.finalized',
+    assignedDoctorSub?: string): Promise<boolean>;
 }
 export interface HttpInput {
   method: string; path: string; queryString?: string; headers: Record<string, string | undefined>;
@@ -82,9 +89,9 @@ function readCookie(input: HttpInput): string | null {
 function slug(value: string): boolean {
   return value.length <= 63 && /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(value) && !RESERVED.has(value);
 }
-function body(input: HttpInput): Record<string, unknown> | null {
+function body(input: HttpInput, maxLength = 4096): Record<string, unknown> | null {
   if (input.isBase64Encoded || !input.headers['content-type']?.toLowerCase().startsWith('application/json') ||
-      !input.body || input.body.length > 4096) return null;
+      !input.body || input.body.length > maxLength) return null;
   try { const value: unknown = JSON.parse(input.body); return object(value) ? value : null; }
   catch { return null; }
 }
@@ -144,6 +151,32 @@ function publicAppointment(appointment: Appointment) {
   const { id, patientId, patientName, doctorId, doctorName, startAt, source, status } = appointment;
   return { id, patientId, patientName, doctorId, doctorName, startAt, source, status };
 }
+function consultationResponse(encounter: Encounter, clinic: Clinic, patient: Patient, doctor: Doctor, role: Role) {
+  if (encounter.status === 'finalized' && (!encounter.finalizedBySub || !encounter.finalizedByDisplayName ||
+      encounter.finalizedDoctorId !== encounter.doctorId)) throw new Error('Finalized clinician identity unavailable');
+  const shownDoctor = encounter.status === 'finalized' ?
+    { id: encounter.finalizedDoctorId!, displayName: encounter.finalizedByDisplayName! } :
+    { id: doctor.id, displayName: doctor.displayName };
+  const publicEncounter: Record<string, unknown> = {
+    appointmentId: encounter.appointmentId, clinicDate: encounter.clinicDate,
+    status: encounter.status, revision: encounter.revision, vitals: encounter.vitals,
+    finalizedAt: encounter.finalizedAt,
+    patient: { id: patient.id, fullName: patient.fullName, ageYears: patient.ageYears, sex: patient.sex },
+    doctor: shownDoctor,
+    clinic: { slug: clinic.slug, displayName: clinic.displayName ?? clinic.slug },
+  };
+  if (role !== 'doctor') return { encounter: publicEncounter };
+  publicEncounter.note = encounter.note;
+  publicEncounter.medications = encounter.medications.map(medicationForDisplay);
+  const printablePrescription = encounter.status === 'finalized' && encounter.medications.length > 0 ? {
+    clinic: { slug: clinic.slug, displayName: clinic.displayName ?? clinic.slug },
+    doctor: shownDoctor,
+    patient: { id: patient.id, fullName: patient.fullName, ageYears: patient.ageYears, sex: patient.sex },
+    appointmentDate: encounter.clinicDate, finalizedAt: encounter.finalizedAt,
+    medications: encounter.medications.map(medicationForDisplay),
+  } : undefined;
+  return printablePrescription ? { encounter: publicEncounter, printablePrescription } : { encounter: publicEncounter };
+}
 
 export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, store: WorkflowStore, config: Config) {
   const origin = new URL(config.publicOrigin);
@@ -158,7 +191,7 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
       try {
         if (!safeEqual(input.headers['x-clinicpluz-edge-key'] ?? '', config.edgeKey)) return result(403, { error: 'Forbidden' });
         if (input.headers.origin && input.headers.origin !== config.publicOrigin) return result(403, { error: 'Origin rejected' });
-        const match = /^\/api\/workflow\/clinics\/([a-z0-9-]+)\/(doctors|patients(?:\/search)?|appointments)$/.exec(input.path);
+        const match = /^\/api\/workflow\/clinics\/([a-z0-9-]+)\/(doctors|patients(?:\/search)?|appointments|consultations(?:\/(?:read|vitals|draft|finalize))?)$/.exec(input.path);
         if (!match || !slug(match[1])) return result(404, { error: 'Not found' });
         const clinicSlug = match[1];
         const endpoint = match[2];
@@ -175,10 +208,18 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
         if (!clinic?.active || clinic.slug !== clinicSlug || !member?.active || member.clinicSlug !== clinicSlug ||
             member.username !== session.username || member.sub !== session.sub || !ROLES.has(member.role) ||
             !(await identity.isActive(member.cognitoUsername, member.sub))) return result(403, { error: 'Clinic access denied' });
-        const module = endpoint.startsWith('patients') ? 'patient_intake' : 'appointments';
+        const isConsultation = endpoint.startsWith('consultations');
+        const module = isConsultation ? 'consultations' : endpoint.startsWith('patients') ? 'patient_intake' : 'appointments';
         if (!modules || modules.clinicSlug !== clinicSlug || modules[module] !== true) return result(403, { error: 'Module unavailable' });
-        const viewing = input.method === 'GET' || endpoint === 'patients/search';
-        if (!(viewing ? VIEW_ROLES : WRITE_ROLES).has(member.role)) return result(403, { error: 'Role not allowed' });
+        if (isConsultation) {
+          if (member.role !== 'nurse' && member.role !== 'doctor') return result(403, { error: 'Role not allowed' });
+          if ((endpoint === 'consultations/draft' || endpoint === 'consultations/finalize') && member.role !== 'doctor') {
+            return result(403, { error: 'Role not allowed' });
+          }
+        } else {
+          const viewing = input.method === 'GET' || endpoint === 'patients/search';
+          if (!(viewing ? VIEW_ROLES : WRITE_ROLES).has(member.role)) return result(403, { error: 'Role not allowed' });
+        }
         if (input.method === 'POST' && (input.headers.origin !== config.publicOrigin ||
             !safeEqual(input.headers['x-csrf-token'] ?? '', session.csrfToken))) return result(403, { error: 'CSRF rejected' });
 
@@ -252,6 +293,105 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
           };
           const booked = await store.createAppointment(clinicSlug, appointment);
           return booked ? result(201, { appointment: publicAppointment(appointment) }) : result(409, { error: 'Doctor slot already booked' });
+        }
+        if (input.method === 'GET' && endpoint === 'consultations') {
+          const date = singleQuery(input.queryString, 'date');
+          if (!date || !calendarDate(date)) return result(400, { error: 'Invalid date' });
+          const appointments = await store.listAppointments(clinicSlug, date);
+          let visible = appointments;
+          if (member.role === 'doctor') {
+            const assigned = new Set((await store.listDoctors(clinicSlug))
+              .filter((doctor) => doctor.active && doctor.staffSub === member.sub).map((doctor) => doctor.id));
+            visible = appointments.filter((appointment) => assigned.has(appointment.doctorId));
+          }
+          const statuses = await store.listEncounterStatuses(clinicSlug, date);
+          return result(200, { items: visible.map((appointment) => ({
+            appointmentId: appointment.id, clinicDate: appointment.clinicDate,
+            patientId: appointment.patientId, patientName: appointment.patientName,
+            doctorId: appointment.doctorId, doctorName: appointment.doctorName,
+            startAt: appointment.startAt, appointmentStatus: appointment.status,
+            encounterStatus: statuses.get(appointment.id) ?? 'draft',
+          })) });
+        }
+        if (input.method === 'POST' && endpoint.startsWith('consultations/') && !(input.queryString ?? '')) {
+          const request = body(input, endpoint === 'consultations/draft' ? 18_000 : 4096);
+          const action = endpoint.split('/')[1];
+          const fields = ['appointmentId', 'clinicDate'];
+          const required = action === 'read' ? fields : [...fields, 'expectedRevision',
+            ...(action === 'vitals' ? ['vitals'] : action === 'draft' ? ['note', 'medications'] : [])];
+          if (!request || !hasOnly(request, required) ||
+              typeof request.appointmentId !== 'string' || !ID.test(request.appointmentId) ||
+              typeof request.clinicDate !== 'string' || !calendarDate(request.clinicDate)) {
+            return result(400, { error: 'Invalid consultation request' });
+          }
+          const appointments = await store.listAppointments(clinicSlug, request.clinicDate);
+          const appointment = appointments.find((row) => row.id === request.appointmentId && row.clinicDate === request.clinicDate);
+          if (!appointment) return result(404, { error: 'Appointment not found' });
+          const [patient, doctor, stored] = await Promise.all([
+            store.getPatient(clinicSlug, appointment.patientId),
+            store.getDoctor(clinicSlug, appointment.doctorId),
+            store.getEncounter(clinicSlug, request.clinicDate, appointment.id),
+          ]);
+          if (!patient || patient.id !== appointment.patientId || !doctor || doctor.id !== appointment.doctorId) {
+            return result(503, { error: 'Clinic record unavailable' });
+          }
+          if (member.role === 'doctor' && (!doctor.active || !doctor.staffSub || doctor.staffSub !== member.sub)) {
+            return result(403, { error: 'Doctor assignment denied' });
+          }
+          if (stored && (stored.appointmentId !== appointment.id || stored.clinicDate !== request.clinicDate ||
+              stored.patientId !== patient.id || stored.doctorId !== doctor.id)) {
+            return result(503, { error: 'Clinic record unavailable' });
+          }
+          if (member.role === 'doctor' && stored?.status === 'finalized' && stored.finalizedBySub !== member.sub) {
+            return result(403, { error: 'Doctor assignment denied' });
+          }
+          const current: Encounter = stored ?? {
+            appointmentId: appointment.id, clinicDate: request.clinicDate,
+            patientId: patient.id, doctorId: doctor.id, status: 'draft', revision: 0,
+            vitals: null, note: { ...EMPTY_NOTE }, medications: [], noteAuthorSub: null,
+            updatedAt: null, finalizedAt: null, finalizedBySub: null,
+            finalizedByDisplayName: null, finalizedDoctorId: null,
+          };
+          if (action === 'read') return result(200, consultationResponse(current, clinic, patient, doctor, member.role));
+          if (typeof request.expectedRevision !== 'number' || !Number.isSafeInteger(request.expectedRevision) ||
+              request.expectedRevision < 0 || request.expectedRevision > 1_000_000) {
+            return result(400, { error: 'Invalid revision' });
+          }
+          if (current.revision !== request.expectedRevision || current.status === 'finalized') {
+            return result(409, { error: 'Encounter changed or finalized' });
+          }
+          const timestamp = now();
+          let next: Encounter;
+          let auditAction: 'vitals.saved' | 'draft.saved' | 'encounter.finalized';
+          if (action === 'vitals') {
+            const vitals = parseVitals(request.vitals, timestamp, session.sub, member.displayName ?? member.username);
+            if (!vitals) return result(400, { error: 'Invalid vitals' });
+            next = { ...current, vitals, revision: current.revision + 1, updatedAt: timestamp.toISOString() };
+            auditAction = 'vitals.saved';
+          } else if (action === 'draft') {
+            const note = parseNote(request.note);
+            const medications = parseMedications(request.medications, session.sub, appointment.id, timestamp);
+            if (!note || !medications) return result(400, { error: 'Invalid consultation draft' });
+            next = { ...current, note, medications, noteAuthorSub: session.sub,
+              revision: current.revision + 1, updatedAt: timestamp.toISOString() };
+            auditAction = 'draft.saved';
+          } else if (action === 'finalize') {
+            if (!stored || current.noteAuthorSub !== session.sub || !readyToFinalize(current)) {
+              return result(400, { error: 'Draft is incomplete' });
+            }
+            if (!member.displayName?.trim()) return result(503, { error: 'Clinician identity unavailable' });
+            next = { ...current, status: 'finalized', revision: current.revision + 1,
+              finalizedAt: timestamp.toISOString(), updatedAt: timestamp.toISOString(),
+              finalizedBySub: session.sub, finalizedByDisplayName: member.displayName,
+              finalizedDoctorId: appointment.doctorId };
+            auditAction = 'encounter.finalized';
+          } else {
+            return result(404, { error: 'Not found' });
+          }
+          const saved = await store.saveEncounter(clinicSlug, appointment, next, request.expectedRevision,
+            session.sub, auditAction, member.role === 'doctor' ? session.sub : undefined);
+          return saved ? result(200, consultationResponse(next, clinic, patient, doctor, member.role)) :
+            result(409, { error: 'Encounter changed or finalized' });
         }
         return result(404, { error: 'Not found' });
       } catch {

@@ -124,6 +124,21 @@ Resources:
         BookAppointment:
           Type: HttpApi
           Properties: { ApiId: !Ref WorkflowApi, Path: '/api/workflow/clinics/{slug}/appointments', Method: POST, PayloadFormatVersion: '2.0' }
+        ConsultationQueue:
+          Type: HttpApi
+          Properties: { ApiId: !Ref WorkflowApi, Path: '/api/workflow/clinics/{slug}/consultations', Method: GET, PayloadFormatVersion: '2.0' }
+        ConsultationRead:
+          Type: HttpApi
+          Properties: { ApiId: !Ref WorkflowApi, Path: '/api/workflow/clinics/{slug}/consultations/read', Method: POST, PayloadFormatVersion: '2.0' }
+        ConsultationVitals:
+          Type: HttpApi
+          Properties: { ApiId: !Ref WorkflowApi, Path: '/api/workflow/clinics/{slug}/consultations/vitals', Method: POST, PayloadFormatVersion: '2.0' }
+        ConsultationDraft:
+          Type: HttpApi
+          Properties: { ApiId: !Ref WorkflowApi, Path: '/api/workflow/clinics/{slug}/consultations/draft', Method: POST, PayloadFormatVersion: '2.0' }
+        ConsultationFinalize:
+          Type: HttpApi
+          Properties: { ApiId: !Ref WorkflowApi, Path: '/api/workflow/clinics/{slug}/consultations/finalize', Method: POST, PayloadFormatVersion: '2.0' }
     Metadata:
       BuildMethod: esbuild
       BuildProperties:

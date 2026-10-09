@@ -246,3 +246,114 @@ select:focus-visible, input:focus-visible { outline: 3px solid #82d6a3; outline-
   .workflow-inline { flex-direction: column; }
   .workflow-inline button { width: 100%; }
 }
+
+.workspace-nav { display: flex; gap: 6px; width: fit-content; max-width: 100%; margin: 0 0 23px; padding: 5px; border: 1px solid #d5e5da; border-radius: 12px; background: #edf4ee; }
+.workspace-nav button { min-height: 38px; padding: 0 17px; color: #557363; border: 0; border-radius: 9px; background: transparent; font-size: 13px; font-weight: 740; }
+.workspace-nav button[aria-current="page"] { color: #155b40; background: #fff; box-shadow: 0 3px 12px rgba(18, 74, 44, .1); }
+.consultation-layout { display: grid; grid-template-columns: minmax(275px, 32%) minmax(0, 1fr); align-items: start; gap: 20px; }
+.consultation-main { display: grid; gap: 17px; min-width: 0; }
+.consultation-list { position: sticky; top: 16px; }
+.consultation-queue-controls { display: flex; align-items: flex-end; gap: 8px; margin-bottom: 15px; }
+.consultation-queue-controls label { display: block; flex: 1; color: #355747; font-size: 12px; font-weight: 700; }
+.consultation-queue-controls input { width: 100%; min-height: 42px; margin-top: 7px; padding: 8px 11px; color: #1b3b32; border: 1px solid #cbded2; border-radius: 9px; background: #fff; font: inherit; font-size: 13px; }
+.consultation-visit-list { display: grid; gap: 8px; max-height: 600px; overflow: auto; }
+.consultation-visit { display: grid; gap: 5px; width: 100%; padding: 12px 13px; color: #466457; border: 1px solid #dce8e0; border-radius: 11px; background: #fbfdfb; text-align: left; font-size: 11px; line-height: 1.45; }
+.consultation-visit:hover, .consultation-visit.is-selected { border-color: #72ba8b; background: #edf8f0; }
+.consultation-visit-top { display: flex; justify-content: space-between; gap: 8px; }
+.consultation-visit-top strong { color: #1b4935; font-size: 13px; }
+.consultation-visit-top span { color: #25815b; font-weight: 740; }
+.consultation-empty { min-height: 210px; padding: 34px; }
+.consultation-empty h4 { margin: 13px 0 8px; color: #1d4637; font-size: 20px; }
+.consultation-empty p { max-width: 460px; margin: 0 0 16px; color: #6c8374; font-size: 13px; line-height: 1.55; }
+.consultation-identity-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 15px; }
+.consultation-identity h4 { margin: 5px 0 7px; color: #173b30; font-size: 23px; }
+.consultation-identity p { color: #667f72; font-size: 12px; line-height: 1.5; }
+.consultation-identity-top p { margin: 0; }
+.consultation-meta { margin: 12px 0 0; }
+.consultation-status { padding: 7px 11px; color: #946d22; border: 1px solid #f0dfb7; border-radius: 999px; background: #fff8e9; font-size: 11px; font-weight: 800; white-space: nowrap; }
+.consultation-status.is-final { color: #1d7550; border-color: #bce3cb; background: #eaf8ee; }
+.consultation-section .workflow-card-head { margin-bottom: 16px; }
+.consultation-section form { margin: 0; }
+.consultation-feedback { margin: 0; }
+.consultation-feedback p { margin: 0 0 10px; }
+.consultation-recovery { border-color: #e7d5ad; background: #fffdf7; }
+.consultation-recovery h4 { margin: 0 0 8px; color: #5e4a28; }
+.consultation-recovery > p, .consultation-recovery-content p, .consultation-recovery-content li { color: #615c4f; font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.consultation-recovery details { margin-top: 14px; }
+.consultation-recovery summary { color: #6a5127; font-size: 12px; font-weight: 760; cursor: pointer; }
+.consultation-recovery-content { display: grid; gap: 13px; margin: 12px 0; }
+.consultation-recovery-content > div { padding: 12px; border: 1px solid #eadfca; border-radius: 9px; background: #fff; }
+.consultation-recovery-content strong { color: #4e4a3b; }
+.consultation-recovery-content ul { margin: 7px 0 0; padding-left: 18px; }
+.consultation-recovery-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin-top: 14px; }
+.consultation-recovery-actions .workflow-action { width: auto; min-height: 38px; margin: 0; }
+.consultation-recorded { margin: 0 0 14px; padding: 10px 12px; color: #436c55; border-radius: 9px; background: #edf7ef; font-size: 11px; line-height: 1.5; }
+.consultation-vital-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.consultation-vital-grid label, .consultation-note-fields label, .consultation-med-fields label { display: block; color: #315848; font-size: 12px; font-weight: 700; }
+.consultation-vital-grid label.consultation-observed { grid-column: span 2; }
+.consultation-vital-grid input, .consultation-note-fields textarea, .consultation-med-fields input { width: 100%; min-height: 42px; margin-top: 7px; padding: 8px 10px; color: #1b3b32; border: 1px solid #cbded2; border-radius: 9px; background: #fff; font: inherit; font-size: 13px; }
+.consultation-note-fields textarea { min-height: 70px; resize: vertical; line-height: 1.5; }
+.consultation-vital-grid input:disabled, .consultation-note-fields textarea:disabled, .consultation-med-fields input:disabled { background: #f4f7f5; }
+.consultation-vital-read { padding: 12px; border: 1px solid #dfebe2; border-radius: 10px; background: #f8fbf8; }
+.consultation-vital-read span { display: block; margin-bottom: 6px; color: #6d8775; font-size: 11px; }
+.consultation-vital-read strong { color: #1e4f38; font-size: 14px; }
+.consultation-save { width: auto; min-width: 190px; margin-top: 17px; }
+.consultation-note-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+.consultation-note-fields label:first-child, .consultation-note-fields label:last-child { grid-column: 1 / -1; }
+.consultation-meds-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 22px 0 12px; }
+.consultation-meds-head h5, .consultation-readonly h5 { margin: 0; color: #204c37; font-size: 14px; }
+.consultation-med { margin: 12px 0; padding: 15px; border: 1px solid #dce9df; border-radius: 11px; }
+.consultation-med legend { padding: 0 6px; color: #285d42; font-size: 12px; font-weight: 760; }
+.consultation-med-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
+.consultation-med-fields label:last-child { grid-column: 1 / -1; }
+.consultation-readonly { display: grid; gap: 13px; }
+.consultation-readonly > div { padding-bottom: 11px; border-bottom: 1px solid #e9f0ea; }
+.consultation-readonly strong { color: #294d3d; font-size: 12px; }
+.consultation-readonly p { margin: 5px 0 0; color: #476757; font-size: 13px; white-space: pre-wrap; line-height: 1.6; }
+.consultation-med-read { padding: 12px !important; border: 1px solid #dce9df !important; border-radius: 10px; background: #f9fcfa; }
+.consultation-finalize-start { min-height: 40px; }
+.consultation-confirm { padding: 15px; border: 1px solid #e7d5ad; border-radius: 11px; background: #fffaf0; }
+.consultation-confirm p { margin: 0 0 14px; color: #6f562d; font-size: 12px; line-height: 1.55; }
+.consultation-confirm > div { display: flex; flex-wrap: wrap; gap: 9px; }
+.consultation-confirm .workflow-action { width: auto; min-height: 38px; margin: 0; }
+.consultation-print-action { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.consultation-print-action h4 { margin: 0 0 6px; }
+.consultation-print-action p { margin: 0; color: #668074; font-size: 12px; }
+.consultation-print-action .workflow-action { width: auto; min-height: 42px; margin: 0; }
+.prescription-print { display: none; }
+
+@media (max-width: 980px) {
+  .consultation-layout { grid-template-columns: 1fr; }
+  .consultation-list { position: static; }
+  .consultation-visit-list { grid-template-columns: repeat(2, minmax(0, 1fr)); max-height: none; }
+}
+@media (max-width: 650px) {
+  .consultation-vital-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .consultation-note-fields, .consultation-med-fields { grid-template-columns: 1fr; }
+  .consultation-note-fields label:first-child, .consultation-note-fields label:last-child, .consultation-med-fields label:last-child { grid-column: auto; }
+  .consultation-visit-list { grid-template-columns: 1fr; }
+  .consultation-print-action { align-items: flex-start; flex-direction: column; }
+  .consultation-print-action .workflow-action { width: 100%; }
+}
+@media (max-width: 420px) {
+  .consultation-vital-grid label.consultation-observed { grid-column: 1 / -1; }
+  .consultation-queue-controls { align-items: stretch; flex-direction: column; }
+  .consultation-queue-controls .workflow-link { width: 100%; }
+}
+@media print {
+  @page { margin: 16mm; }
+  html, body, .app-layout, .login-panel { min-width: 0; min-height: 0 !important; background: #fff !important; }
+  .app-layout--workspace .login-panel { min-height: 0; padding: 0; }
+  .app-layout--workspace .panel-center { width: 100%; margin: 0; padding: 0; }
+  .panel-top, .panel-footer, .demo-banner, .workspace-header, .workspace-nav, .consultation > :not(.prescription-print) { display: none !important; }
+  .prescription-print { display: block !important; position: static; width: 100%; padding: 0; color: #111; font: 12pt/1.45 Georgia, serif; }
+  .prescription-print .print-pilot { padding: 8px 0; border-bottom: 1px solid #777; font: bold 9pt/1.4 Arial, sans-serif; text-transform: uppercase; }
+  .prescription-print header { margin: 22px 0 15px; border-bottom: 2px solid #111; }
+  .prescription-print h1 { margin: 0; font-size: 23pt; }
+  .prescription-print h2 { margin-top: 25px; font-size: 15pt; }
+  .prescription-print .print-people { margin: 18px 0; }
+  .prescription-print ol { padding-left: 23px; }
+  .prescription-print li { padding: 9px 0; break-inside: avoid; }
+  .prescription-print li p { margin: 3px 0; }
+  .prescription-print footer { margin-top: 25px; padding-top: 9px; border-top: 1px solid #777; font-size: 9pt; }
+}

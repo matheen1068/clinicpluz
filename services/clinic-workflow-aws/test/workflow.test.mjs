@@ -7,6 +7,9 @@ import { fromHttpApiEvent } from '../src/http-api.ts';
 const ORIGIN = 'https://example123.cloudfront.net';
 const EDGE_KEY = 'e'.repeat(48);
 const COOKIE = 'c'.repeat(43);
+const DOCTOR_COOKIE = 'd'.repeat(43);
+const OTHER_DOCTOR_COOKIE = 'o'.repeat(43);
+const NURSE_COOKIE = 'n'.repeat(43);
 const CSRF = 'csrf-token-for-synthetic-staging';
 const NOW = new Date('2026-10-09T10:00:00Z');
 const ROOT = '/api/workflow/clinics';
@@ -15,18 +18,33 @@ function setup() {
   const sessions = new Map([[createHash('sha256').update(COOKIE).digest('hex'), {
     clinicSlug: 'goodwell', username: 'reception', sub: 'staff-sub-1', csrfToken: CSRF,
     expiresAt: Math.floor(NOW.getTime() / 1000) + 3600,
+  }], [createHash('sha256').update(DOCTOR_COOKIE).digest('hex'), {
+    clinicSlug: 'goodwell', username: 'doctor1', sub: 'doctor-sub-1', csrfToken: CSRF,
+    expiresAt: Math.floor(NOW.getTime() / 1000) + 3600,
+  }], [createHash('sha256').update(OTHER_DOCTOR_COOKIE).digest('hex'), {
+    clinicSlug: 'goodwell', username: 'doctor2', sub: 'doctor-sub-2', csrfToken: CSRF,
+    expiresAt: Math.floor(NOW.getTime() / 1000) + 3600,
+  }], [createHash('sha256').update(NURSE_COOKIE).digest('hex'), {
+    clinicSlug: 'goodwell', username: 'nurse', sub: 'nurse-sub-1', csrfToken: CSRF,
+    expiresAt: Math.floor(NOW.getTime() / 1000) + 3600,
   }]]);
   const clinics = new Map([
-    ['goodwell', { slug: 'goodwell', active: true }],
-    ['blesswell', { slug: 'blesswell', active: true }],
+    ['goodwell', { slug: 'goodwell', displayName: 'Goodwell Demo Clinic', active: true }],
+    ['blesswell', { slug: 'blesswell', displayName: 'Blesswell Demo Clinic', active: true }],
   ]);
   const members = new Map([
     ['goodwell/reception', { clinicSlug: 'goodwell', username: 'reception', cognitoUsername: 'internal-1',
-      sub: 'staff-sub-1', role: 'receptionist', active: true }],
+      sub: 'staff-sub-1', displayName: 'Demo Receptionist', role: 'receptionist', active: true }],
+    ['goodwell/doctor1', { clinicSlug: 'goodwell', username: 'doctor1', cognitoUsername: 'internal-doctor-1',
+      sub: 'doctor-sub-1', displayName: 'Dr One', role: 'doctor', active: true }],
+    ['goodwell/doctor2', { clinicSlug: 'goodwell', username: 'doctor2', cognitoUsername: 'internal-doctor-2',
+      sub: 'doctor-sub-2', displayName: 'Dr Two', role: 'doctor', active: true }],
+    ['goodwell/nurse', { clinicSlug: 'goodwell', username: 'nurse', cognitoUsername: 'internal-nurse',
+      sub: 'nurse-sub-1', displayName: 'Demo Nurse', role: 'nurse', active: true }],
   ]);
   const modules = new Map([
-    ['goodwell', { clinicSlug: 'goodwell', patient_intake: true, appointments: true }],
-    ['blesswell', { clinicSlug: 'blesswell', patient_intake: true, appointments: true }],
+    ['goodwell', { clinicSlug: 'goodwell', patient_intake: true, appointments: true, consultations: true }],
+    ['blesswell', { clinicSlug: 'blesswell', patient_intake: true, appointments: true, consultations: true }],
   ]);
   const auth = {
     async getSession(hash) { return sessions.get(hash) ?? null; },
@@ -37,7 +55,8 @@ function setup() {
   let cognitoActive = true;
   const identity = { async isActive() { return cognitoActive; } };
   const doctors = new Map([
-    ['goodwell', [{ id: 'd1', displayName: 'Dr One', active: true }, { id: 'd2', displayName: 'Dr Two', active: true }]],
+    ['goodwell', [{ id: 'd1', displayName: 'Dr One', active: true, staffSub: 'doctor-sub-1' },
+      { id: 'd2', displayName: 'Dr Two', active: true, staffSub: 'doctor-sub-2' }]],
     ['blesswell', [{ id: 'd1', displayName: 'Dr Other', active: true }]],
   ]);
   const schedules = new Map([
@@ -46,6 +65,7 @@ function setup() {
   ]);
   const patients = new Map();
   const appointments = new Map();
+  const encounters = new Map();
   const occupied = new Set();
   const audit = [];
   const store = {
@@ -72,6 +92,27 @@ function setup() {
       audit.push({ action: 'appointment.created', slug, actorSub: appointment.createdBySub });
       return true;
     },
+    async getEncounter(slug, date, appointmentId) {
+      return encounters.get(`${slug}/${date}/${appointmentId}`) ?? null;
+    },
+    async listEncounterStatuses(slug, date) {
+      return new Map([...(encounters.entries())]
+        .filter(([key]) => key.startsWith(`${slug}/${date}/`))
+        .map(([, encounter]) => [encounter.appointmentId, encounter.status]));
+    },
+    async saveEncounter(slug, appointment, encounter, expectedRevision, actorSub, action, assignedDoctorSub) {
+      const key = `${slug}/${encounter.clinicDate}/${encounter.appointmentId}`;
+      const current = encounters.get(key);
+      if ((current?.revision ?? 0) !== expectedRevision || current?.status === 'finalized') return false;
+      if (!(appointments.get(slug) ?? []).some((row) => row.id === appointment.id &&
+          row.patientId === encounter.patientId && row.doctorId === encounter.doctorId) ||
+          !patients.get(slug)?.has(encounter.patientId)) throw new Error('Broken appointment link');
+      if (assignedDoctorSub && !(doctors.get(slug) ?? []).some((doctor) => doctor.id === appointment.doctorId &&
+          doctor.active && doctor.staffSub === assignedDoctorSub)) throw new Error('Doctor mapping changed');
+      encounters.set(key, encounter);
+      audit.push({ action, slug, actorSub, revision: encounter.revision });
+      return true;
+    },
   };
   const app = createWorkflowApp(auth, identity, store, { publicOrigin: ORIGIN, edgeKey: EDGE_KEY, now: () => NOW });
   async function call(method, path, payload, options = {}) {
@@ -85,10 +126,28 @@ function setup() {
     });
     return { status: response.statusCode, body: JSON.parse(response.body), headers: response.headers };
   }
-  return { call, auth, store, sessions, clinics, members, modules, schedules, doctors, patients, appointments,
+  return { call, auth, store, sessions, clinics, members, modules, schedules, doctors, patients, appointments, encounters,
     audit, setCognitoActive: (value) => { cognitoActive = value; } };
 }
 const patient = { fullName: 'Amina Khan', phone: '+91 98765 43210', ageYears: 38, sex: 'female', email: 'amina@example.test' };
+const consultationBase = `${ROOT}/goodwell/consultations`;
+const doctorSession = { cookies: [`__Host-cpz_session=${DOCTOR_COOKIE}`] };
+const otherDoctorSession = { cookies: [`__Host-cpz_session=${OTHER_DOCTOR_COOKIE}`] };
+const nurseSession = { cookies: [`__Host-cpz_session=${NURSE_COOKIE}`] };
+const note = { chiefComplaint: 'Synthetic complaint', history: '', exam: 'Synthetic exam',
+  assessment: 'Clinician-entered assessment', plan: 'Clinician-entered plan' };
+const medications = [{ name: 'Demo Medicine', strength: '10 mg', dose: '1 tablet', route: 'oral',
+  frequency: 'once daily', duration: '3 days', instructions: 'After food' }];
+
+async function seedAppointment(world, doctorId = 'd1') {
+  const registered = await world.call('POST', `${ROOT}/goodwell/patients`, patient);
+  assert.equal(registered.status, 201);
+  const booked = await world.call('POST', `${ROOT}/goodwell/appointments`, {
+    patientId: registered.body.patient.id, doctorId, startAt: '2026-10-10T10:00:00+05:30', source: 'walk_in',
+  });
+  assert.equal(booked.status, 201);
+  return { appointmentId: booked.body.appointment.id, clinicDate: '2026-10-10' };
+}
 
 test('session, clinic, role, Cognito state, and entitlements are checked on every request', async () => {
   const world = setup();
@@ -191,4 +250,185 @@ test('patient and appointment data cannot be read through a different clinic pat
   assert.equal(mapped.path, `${ROOT}/goodwell/patients/search`);
   assert.equal(fromHttpApiEvent({ version: '2.0', rawPath: '/', headers: { Origin: 'a', origin: 'b' },
     requestContext: { http: { method: 'GET' } } }), null);
+});
+
+test('consultation queue and read enforce clinician role, entitlement, and assigned doctor mapping', async () => {
+  const world = setup();
+  const own = await seedAppointment(world, 'd1');
+  await seedAppointment(world, 'd2');
+  const query = { queryString: 'date=2026-10-10' };
+  assert.equal((await world.call('GET', consultationBase, undefined, query)).status, 403);
+  const nurseQueue = await world.call('GET', consultationBase, undefined, { ...query, ...nurseSession });
+  assert.equal(nurseQueue.status, 200);
+  assert.equal(nurseQueue.body.items.length, 2);
+  const doctorQueue = await world.call('GET', consultationBase, undefined, { ...query, ...doctorSession });
+  assert.equal(doctorQueue.body.items.length, 1);
+  assert.equal(doctorQueue.body.items[0].appointmentId, own.appointmentId);
+  const read = await world.call('POST', `${consultationBase}/read`, own, doctorSession);
+  assert.equal(read.status, 200);
+  assert.equal(read.body.encounter.revision, 0);
+  assert.equal(read.body.encounter.status, 'draft');
+  assert.equal(read.body.encounter.vitals, null);
+  assert.deepEqual(read.body.encounter.medications, []);
+  assert.equal(read.body.printablePrescription, undefined);
+  assert.equal((await world.call('POST', `${consultationBase}/read`, own, otherDoctorSession)).status, 403);
+  assert.equal((await world.call('POST', `${consultationBase}/read`, own, nurseSession)).body.encounter.note, undefined);
+  world.doctors.get('goodwell')[0].staffSub = undefined;
+  assert.equal((await world.call('GET', consultationBase, undefined, { ...query, ...doctorSession })).body.items.length, 0);
+  assert.equal((await world.call('POST', `${consultationBase}/read`, own, doctorSession)).status, 403);
+  world.modules.get('goodwell').consultations = false;
+  assert.equal((await world.call('POST', `${consultationBase}/read`, own, nurseSession)).status, 403);
+  assert.equal((await world.call('GET', `${ROOT}/goodwell/doctors`)).status, 200);
+  delete world.modules.get('goodwell').consultations;
+  assert.equal((await world.call('POST', `${consultationBase}/read`, own, nurseSession)).status, 403);
+  assert.equal((await world.call('GET', `${ROOT}/goodwell/doctors`)).status, 200);
+  world.modules.get('goodwell').consultations = true;
+  world.members.get('goodwell/reception').role = 'clinic_admin';
+  assert.equal((await world.call('POST', `${consultationBase}/read`, own)).status, 403);
+  assert.equal((await world.call('POST', `${consultationBase}/draft`,
+    { ...own, expectedRevision: 0, note, medications })).status, 403);
+  assert.equal((await world.call('POST', `${ROOT}/blesswell/consultations/read`, own, nurseSession)).status, 403);
+});
+
+test('nurse vitals, doctor draft, and doctor finalization preserve attribution and print only finalized medicines', async () => {
+  const world = setup();
+  const selected = await seedAppointment(world);
+  const vitals = { observedAt: NOW.toISOString(), systolicBpMmHg: 120, diastolicBpMmHg: 80,
+    pulseBpm: 72, spo2Percent: 99, temperatureC: 37, weightKg: 65, heightCm: 168 };
+  const savedVitals = await world.call('POST', `${consultationBase}/vitals`,
+    { ...selected, expectedRevision: 0, vitals }, nurseSession);
+  assert.equal(savedVitals.status, 200);
+  assert.equal(savedVitals.body.encounter.revision, 1);
+  assert.equal(savedVitals.body.encounter.vitals.recordedByDisplayName, 'Demo Nurse');
+  assert.equal(savedVitals.body.encounter.note, undefined);
+  const draft = await world.call('POST', `${consultationBase}/draft`,
+    { ...selected, expectedRevision: 1, note, medications }, doctorSession);
+  assert.equal(draft.status, 200);
+  assert.equal(draft.body.encounter.vitals.pulseBpm, 72);
+  assert.equal(draft.body.printablePrescription, undefined);
+  assert.equal(world.encounters.get(`goodwell/${selected.clinicDate}/${selected.appointmentId}`).medications[0].prescriberSub,
+    'doctor-sub-1');
+  assert.equal((await world.call('POST', `${consultationBase}/finalize`,
+    { ...selected, expectedRevision: 2 }, nurseSession)).status, 403);
+  const finalized = await world.call('POST', `${consultationBase}/finalize`,
+    { ...selected, expectedRevision: 2 }, doctorSession);
+  assert.equal(finalized.status, 200);
+  assert.equal(finalized.body.encounter.status, 'finalized');
+  assert.equal(finalized.body.encounter.revision, 3);
+  assert.equal(finalized.body.printablePrescription.clinic.displayName, 'Goodwell Demo Clinic');
+  assert.equal(finalized.body.printablePrescription.patient.fullName, patient.fullName);
+  assert.equal(finalized.body.printablePrescription.medications[0].dose, '1 tablet');
+  assert.equal((await world.call('POST', `${consultationBase}/read`, selected, doctorSession)).body.printablePrescription.finalizedAt,
+    finalized.body.encounter.finalizedAt);
+  const nurseRead = await world.call('POST', `${consultationBase}/read`, selected, nurseSession);
+  assert.equal(nurseRead.body.encounter.medications, undefined);
+  assert.equal(nurseRead.body.printablePrescription, undefined);
+  assert.equal((await world.call('POST', `${consultationBase}/draft`,
+    { ...selected, expectedRevision: 3, note, medications }, doctorSession)).status, 409);
+  assert.equal((await world.call('POST', `${consultationBase}/finalize`,
+    { ...selected, expectedRevision: 3 }, doctorSession)).status, 409);
+  assert.deepEqual(world.audit.filter((entry) => entry.action.includes('saved') || entry.action === 'encounter.finalized')
+    .map((entry) => entry.action), ['vitals.saved', 'draft.saved', 'encounter.finalized']);
+});
+
+test('consultation input, CSRF, stale revision, and incomplete finalization fail closed', async () => {
+  const world = setup();
+  const selected = await seedAppointment(world);
+  const path = `${consultationBase}/vitals`;
+  assert.equal((await world.call('POST', path,
+    { ...selected, expectedRevision: 0, vitals: { observedAt: NOW.toISOString() } }, nurseSession)).status, 400);
+  assert.equal((await world.call('POST', path,
+    { ...selected, expectedRevision: 0, vitals: { observedAt: NOW.toISOString(), systolicBpMmHg: 120 } }, nurseSession)).status, 400);
+  assert.equal((await world.call('POST', path,
+    { ...selected, expectedRevision: 0, vitals: { observedAt: NOW.toISOString(), pulseBpm: 1000 } }, nurseSession)).status, 400);
+  assert.equal((await world.call('POST', path,
+    { ...selected, expectedRevision: 0, vitals: { observedAt: '2026-02-31T10:00:00Z', pulseBpm: 72 } }, nurseSession)).status, 400);
+  assert.equal((await world.call('POST', path,
+    { ...selected, expectedRevision: 0, vitals: { observedAt: '2026-10-09T10:00:00+14:30', pulseBpm: 72 } }, nurseSession)).status, 400);
+  assert.equal((await world.call('POST', path,
+    { ...selected, expectedRevision: 0, vitals: { observedAt: NOW.toISOString(), pulseBpm: 72 } },
+    { ...nurseSession, headers: { 'x-csrf-token': 'bad' } })).status, 403);
+  assert.equal((await world.call('POST', path,
+    { ...selected, expectedRevision: 0, vitals: { observedAt: NOW.toISOString(), pulseBpm: 72 } },
+    { ...nurseSession, headers: { origin: 'https://bad.example' } })).status, 403);
+  assert.equal((await world.call('POST', `${consultationBase}/draft`,
+    { ...selected, expectedRevision: 0, note, medications }, nurseSession)).status, 403);
+  assert.equal((await world.call('POST', `${consultationBase}/draft`,
+    { ...selected, expectedRevision: 0, note: { ...note, plan: 'a'.repeat(3001) }, medications }, doctorSession)).status, 400);
+  const first = await world.call('POST', `${consultationBase}/draft`,
+    { ...selected, expectedRevision: 0, note: { ...note, assessment: '' }, medications }, doctorSession);
+  assert.equal(first.status, 200);
+  assert.equal((await world.call('POST', `${consultationBase}/finalize`,
+    { ...selected, expectedRevision: 1 }, doctorSession)).status, 400);
+  assert.equal((await world.call('POST', `${consultationBase}/draft`,
+    { ...selected, expectedRevision: 0, note, medications }, doctorSession)).status, 409);
+  const expired = world.sessions.get(createHash('sha256').update(DOCTOR_COOKIE).digest('hex'));
+  expired.expiresAt = Math.floor(NOW.getTime() / 1000);
+  assert.equal((await world.call('POST', `${consultationBase}/read`, selected, doctorSession)).status, 401);
+  assert.equal(world.audit.filter((entry) => entry.action === 'draft.saved').length, 1);
+});
+
+test('concurrent encounter edits accept one revision and audit only the winning save', async () => {
+  const world = setup();
+  const selected = await seedAppointment(world);
+  const firstVitals = { ...selected, expectedRevision: 0,
+    vitals: { observedAt: NOW.toISOString(), pulseBpm: 70 } };
+  const secondVitals = { ...selected, expectedRevision: 0,
+    vitals: { observedAt: NOW.toISOString(), pulseBpm: 75 } };
+  const raced = await Promise.all([
+    world.call('POST', `${consultationBase}/vitals`, firstVitals, nurseSession),
+    world.call('POST', `${consultationBase}/vitals`, secondVitals, nurseSession),
+  ]);
+  assert.deepEqual(raced.map((reply) => reply.status).sort(), [200, 409]);
+  assert.equal(world.audit.filter((entry) => entry.action === 'vitals.saved').length, 1);
+  assert.equal(world.encounters.get(`goodwell/${selected.clinicDate}/${selected.appointmentId}`).revision, 1);
+});
+
+test('later nurse vitals preserve doctor draft and require a fresh revision to finalize', async () => {
+  const world = setup();
+  const selected = await seedAppointment(world);
+  const draft = await world.call('POST', `${consultationBase}/draft`,
+    { ...selected, expectedRevision: 0, note, medications }, doctorSession);
+  assert.equal(draft.status, 200);
+  const vitals = await world.call('POST', `${consultationBase}/vitals`,
+    { ...selected, expectedRevision: 1,
+      vitals: { observedAt: NOW.toISOString(), pulseBpm: 74 } }, nurseSession);
+  assert.equal(vitals.status, 200);
+  const doctorRead = await world.call('POST', `${consultationBase}/read`, selected, doctorSession);
+  assert.deepEqual(doctorRead.body.encounter.note, note);
+  assert.equal(doctorRead.body.encounter.medications[0].name, medications[0].name);
+  assert.equal(doctorRead.body.encounter.vitals.pulseBpm, 74);
+  assert.equal((await world.call('POST', `${consultationBase}/finalize`,
+    { ...selected, expectedRevision: 1 }, doctorSession)).status, 409);
+  assert.equal((await world.call('POST', `${consultationBase}/finalize`,
+    { ...selected, expectedRevision: 2 }, doctorSession)).status, 200);
+});
+
+test('finalized prescription retains the finalizing clinician when roster or membership changes', async () => {
+  const world = setup();
+  const selected = await seedAppointment(world);
+  assert.equal((await world.call('POST', `${consultationBase}/draft`,
+    { ...selected, expectedRevision: 0, note, medications }, doctorSession)).status, 200);
+  const finalized = await world.call('POST', `${consultationBase}/finalize`,
+    { ...selected, expectedRevision: 1 }, doctorSession);
+  assert.equal(finalized.status, 200);
+  assert.deepEqual(finalized.body.printablePrescription.doctor, { id: 'd1', displayName: 'Dr One' });
+  const stored = world.encounters.get(`goodwell/${selected.clinicDate}/${selected.appointmentId}`);
+  assert.equal(stored.finalizedBySub, 'doctor-sub-1');
+  assert.equal(stored.finalizedByDisplayName, 'Dr One');
+  assert.equal(stored.finalizedDoctorId, 'd1');
+
+  world.doctors.get('goodwell')[0].displayName = 'Renamed Roster Doctor';
+  world.members.get('goodwell/doctor1').displayName = 'Renamed Staff Account';
+  const reprint = await world.call('POST', `${consultationBase}/read`, selected, doctorSession);
+  assert.equal(reprint.status, 200);
+  assert.deepEqual(reprint.body.printablePrescription.doctor, { id: 'd1', displayName: 'Dr One' });
+  assert.deepEqual(reprint.body.encounter.doctor, { id: 'd1', displayName: 'Dr One' });
+
+  world.doctors.get('goodwell')[0].staffSub = 'doctor-sub-2';
+  assert.equal((await world.call('POST', `${consultationBase}/read`, selected, doctorSession)).status, 403);
+  assert.equal((await world.call('POST', `${consultationBase}/read`, selected, otherDoctorSession)).status, 403);
+  world.doctors.get('goodwell')[0].staffSub = 'doctor-sub-1';
+  assert.deepEqual((await world.call('POST', `${consultationBase}/read`, selected, doctorSession))
+    .body.printablePrescription.doctor, { id: 'd1', displayName: 'Dr One' });
 });

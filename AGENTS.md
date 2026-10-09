@@ -5,8 +5,8 @@ ClinicPluz is a staff-only clinic and small-hospital product. The immediate targ
 ## Team and scope
 
 - **Coordinating chat:** works with the product owner, sets the next small milestone, reviews agent output, records decisions and blockers, and keeps the code branch coherent.
-- **Agent Green — current slice:** owns the Clinic App reception workflow UI and preserves the already verified clinic-specific staff login. Green does not implement the Control Panel or workflow backend.
-- **Agent Black — current slice:** owns the new Clinic App reception-workflow backend in `services/clinic-workflow-aws`. The separate Control Panel backend foundation is preserved on `feat/control-panel-backend-v1` and is on hold while the product owner prioritizes Clinic App modules. Black does not edit Green's Clinic App/auth service or deploy clinical resources without review.
+- **Agent Green — current slice:** owns the Clinic App consultation UI in `apps/clinic` and preserves the verified clinic-specific staff login and reception workflow. Green does not implement the Control Panel or workflow backend.
+- **Agent Black — current slice:** owns consultation APIs in `services/clinic-workflow-aws` and preserves its verified reception endpoints. The separate Control Panel backend foundation is preserved on `feat/control-panel-backend-v1` and is on hold while the product owner prioritizes Clinic App modules. Black does not edit Green's Clinic App/auth service or deploy clinical resources without review.
 
 Each handoff includes changed paths, the behavior proved, checks run, unresolved decisions, and the next dependency. Work on reviewable branches of the existing `matheen1068/clinicpluz` repository. Do not mix Control Panel and Clinic App changes into the same slice without a reviewed interface contract.
 
@@ -19,5 +19,6 @@ Each handoff includes changed paths, the behavior proved, checks run, unresolved
 - No WhatsApp integration. Planned notifications use AWS SES when an email address is available.
 - Keep staging and production distinct. The owned domain, production identity design, database, and AWS deployment details are not yet finalized. Do not present local demo storage or test credentials as production ready.
 - Use synthetic records until clinical privacy, audit, backup, retention, and access controls are ready for real patient data.
+- The consultation slice records clinician-entered vitals, notes, and prescriptions. It must not generate diagnoses, suggest medicines, or claim to detect drug interactions. Clinic admins do not author clinical notes or prescriptions.
 
 Do not deploy, create external cloud resources, change sharing, send email, or delete prototype files as part of routine feature work. Ask the coordinating chat to resolve a decision that changes product scope or clinical workflow.
