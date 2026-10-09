@@ -130,6 +130,9 @@ Resources:
         ConsultationRead:
           Type: HttpApi
           Properties: { ApiId: !Ref WorkflowApi, Path: '/api/workflow/clinics/{slug}/consultations/read', Method: POST, PayloadFormatVersion: '2.0' }
+        SearchMedicines:
+          Type: HttpApi
+          Properties: { ApiId: !Ref WorkflowApi, Path: '/api/workflow/clinics/{slug}/consultations/medicines/search', Method: POST, PayloadFormatVersion: '2.0' }
         ConsultationVitals:
           Type: HttpApi
           Properties: { ApiId: !Ref WorkflowApi, Path: '/api/workflow/clinics/{slug}/consultations/vitals', Method: POST, PayloadFormatVersion: '2.0' }

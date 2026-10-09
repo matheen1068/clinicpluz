@@ -14,6 +14,23 @@ const CSRF = 'csrf-token-for-synthetic-staging';
 const NOW = new Date('2026-10-09T10:00:00Z');
 const ROOT = '/api/workflow/clinics';
 
+test('clinic medicine search is doctor-only, tenant-scoped, and never returns inactive items', async () => {
+  const world = setup();
+  const route = `${ROOT}/goodwell/consultations/medicines/search`;
+  const doctor = { cookies: [`__Host-cpz_session=${DOCTOR_COOKIE}`] };
+  const found = await world.call('POST', route, { query: 'Synthetic tablet' }, doctor);
+  assert.equal(found.status, 200);
+  assert.deepEqual(found.body.items.map((item) => item.id), ['med-2', 'med-1']);
+  assert.equal(found.body.items.some((item) => item.id === 'med-3' || item.id === 'med-4'), false);
+  assert.equal((await world.call('POST', route, { query: 'tablet' })).status, 403);
+  assert.equal((await world.call('POST', route, { query: 'tablet' }, { cookies: [`__Host-cpz_session=${NURSE_COOKIE}`] })).status, 403);
+  assert.equal((await world.call('POST', `${ROOT}/blesswell/consultations/medicines/search`, { query: 'tablet' }, doctor)).status, 403);
+  assert.equal((await world.call('POST', route, { query: 'tablet' }, { ...doctor, headers: { 'x-csrf-token': 'wrong' } })).status, 403);
+  assert.equal((await world.call('POST', route, { query: 'x' }, doctor)).status, 400);
+  world.modules.get('goodwell').consultations = false;
+  assert.equal((await world.call('POST', route, { query: 'tablet' }, doctor)).status, 403);
+});
+
 function setup() {
   const sessions = new Map([[createHash('sha256').update(COOKIE).digest('hex'), {
     clinicSlug: 'goodwell', username: 'reception', sub: 'staff-sub-1', csrfToken: CSRF,
@@ -59,6 +76,14 @@ function setup() {
       { id: 'd2', displayName: 'Dr Two', active: true, staffSub: 'doctor-sub-2' }]],
     ['blesswell', [{ id: 'd1', displayName: 'Dr Other', active: true }]],
   ]);
+  const medicines = new Map([
+    ['goodwell', [
+      { id: 'med-1', name: 'Synthetic tablet A', strength: '5 mg', active: true, favorite: false },
+      { id: 'med-2', name: 'Synthetic tablet B', strength: '5 mg', active: true, favorite: true },
+      { id: 'med-3', name: 'Synthetic tablet hidden', strength: '5 mg', active: false, favorite: true },
+    ]],
+    ['blesswell', [{ id: 'med-4', name: 'Synthetic tablet Other', strength: '5 mg', active: true, favorite: true }]],
+  ]);
   const schedules = new Map([
     ['goodwell', { timezone: 'Asia/Kolkata', openMinute: 570, closeMinute: 1110, slotMinutes: 30 }],
     ['blesswell', { timezone: 'Asia/Kolkata', openMinute: 570, closeMinute: 1110, slotMinutes: 30 }],
@@ -71,6 +96,7 @@ function setup() {
   const store = {
     async getSchedule(slug) { return schedules.get(slug) ?? null; },
     async listDoctors(slug) { return doctors.get(slug) ?? []; },
+    async listMedicines(slug) { return medicines.get(slug) ?? []; },
     async getDoctor(slug, id) { return (doctors.get(slug) ?? []).find((doctor) => doctor.id === id) ?? null; },
     async searchPatients(slug, kind, prefix) {
       return [...(patients.get(slug)?.values() ?? [])].filter((patient) =>
@@ -126,7 +152,7 @@ function setup() {
     });
     return { status: response.statusCode, body: JSON.parse(response.body), headers: response.headers };
   }
-  return { call, auth, store, sessions, clinics, members, modules, schedules, doctors, patients, appointments, encounters,
+  return { call, auth, store, sessions, clinics, members, modules, schedules, doctors, medicines, patients, appointments, encounters,
     audit, setCognitoActive: (value) => { cognitoActive = value; } };
 }
 const patient = { fullName: 'Amina Khan', phone: '+91 98765 43210', ageYears: 38, sex: 'female', email: 'amina@example.test' };

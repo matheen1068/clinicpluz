@@ -4,7 +4,7 @@ import {
 } from '@aws-sdk/client-dynamodb';
 import { CognitoIdentityProviderClient, AdminGetUserCommand } from '@aws-sdk/client-cognito-identity-provider';
 import type {
-  Appointment, AuthStore, Clinic, Doctor, Entitlements, Membership, Patient,
+  Appointment, AuthStore, Clinic, Doctor, Entitlements, Membership, MedicineCatalogItem, Patient,
   Role, Session, StaffIdentity, WorkflowStore, Sex, Source, AppointmentStatus, Schedule,
 } from './core.js';
 import type { Encounter } from './consultation.js';
@@ -57,6 +57,16 @@ function doctor(item: Item): Doctor {
   const staffSub = (item.staffSub as { S?: string } | undefined)?.S;
   return { id: string(item, 'id'), displayName: string(item, 'displayName'), active: bool(item, 'active'),
     ...(staffSub ? { staffSub } : {}) };
+}
+function medicine(item: Item): MedicineCatalogItem {
+  const id = string(item, 'id');
+  const name = string(item, 'name');
+  const strength = string(item, 'strength');
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(id) || string(item, 'sk') !== `MEDICINE#${id}` ||
+      name.length > 160 || strength.length > 160) {
+    throw new Error('Invalid medicine catalog item');
+  }
+  return { id, name, strength, active: bool(item, 'active'), favorite: optionalBool(item, 'favorite') };
 }
 function appointment(item: Item): Appointment {
   const source = string(item, 'source') as Source;
@@ -148,6 +158,10 @@ export class DynamoWorkflowStore implements WorkflowStore {
   async listDoctors(slug: string): Promise<Doctor[]> {
     const rows = await this.query(`CLINIC#${slug}#DOCTORS`, 'DOCTOR#', 100);
     return rows.map(doctor);
+  }
+  async listMedicines(slug: string): Promise<MedicineCatalogItem[]> {
+    const rows = await this.query(`CLINIC#${slug}#MEDICINES`, 'MEDICINE#', 200);
+    return rows.map(medicine);
   }
   async getDoctor(slug: string, id: string): Promise<Doctor | null> {
     const item = await this.get(`CLINIC#${slug}#DOCTORS`, `DOCTOR#${id}`);

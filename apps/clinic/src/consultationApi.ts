@@ -43,6 +43,7 @@ export interface Medication {
   duration: string;
   instructions: string;
 }
+export interface MedicineCatalogItem { id: string; name: string; strength: string; favorite: boolean }
 export interface PersonIdentity { id: string; fullName: string; ageYears: number; sex: string }
 export interface DoctorIdentity { id: string; displayName: string }
 export interface ClinicIdentity { slug: string; displayName: string }
@@ -89,7 +90,7 @@ const validDate = (value: unknown): value is string => {
 const validTime = (value: unknown): value is string => typeof value === 'string' && Number.isFinite(Date.parse(value)) && /^\d{4}-\d{2}-\d{2}T/.test(value) && /(?:Z|[+-]\d{2}:\d{2})$/.test(value);
 
 function path(slug: string, endpoint: string): string {
-  if (!validClinicSlug(slug) || !/^(?:consultations|consultations\/(?:read|vitals|draft|finalize))(?:\?date=\d{4}-\d{2}-\d{2})?$/.test(endpoint)) {
+  if (!validClinicSlug(slug) || !/^(?:consultations|consultations\/(?:read|vitals|draft|finalize|medicines\/search))(?:\?date=\d{4}-\d{2}-\d{2})?$/.test(endpoint)) {
     throw new ConsultationApiError(null, 'Invalid consultation route');
   }
   return `/api/workflow/clinics/${slug}/${endpoint}`;
@@ -227,6 +228,25 @@ export async function getConsultationQueue(slug: string, date: string, signal?: 
   const items = parseQueue(await request(path(slug, `consultations?date=${date}`), { method: 'GET', signal }));
   if (items.some((item) => item.clinicDate !== date)) throw new ConsultationApiError(null, 'Consultation queue date mismatch');
   return items;
+}
+export async function searchMedicines(slug: string, query: string, csrfToken: string, signal?: AbortSignal): Promise<MedicineCatalogItem[]> {
+  const term = query.trim().replace(/\s+/g, ' ');
+  if (term.length < 2 || term.length > 64 || !/^[\p{L}\p{M}\p{N} .'-]+$/u.test(term)) {
+    throw new ConsultationApiError(null, 'Enter at least two letters or numbers to search medicines');
+  }
+  const response = await request(path(slug, 'consultations/medicines/search'), {
+    method: 'POST', headers: csrfHeaders(csrfToken), body: JSON.stringify({ query: term }), signal,
+  });
+  if (!isRecord(response) || !Array.isArray(response.items) || response.items.length > 20) {
+    throw new ConsultationApiError(null, 'Invalid medicine catalog response');
+  }
+  return response.items.map((value: unknown) => {
+    if (!isRecord(value) || !validId(value.id) || !nonempty(value.name) || value.name.length > 160 ||
+        !nonempty(value.strength) || value.strength.length > 160 || typeof value.favorite !== 'boolean') {
+      throw new ConsultationApiError(null, 'Invalid medicine catalog item');
+    }
+    return value as unknown as MedicineCatalogItem;
+  });
 }
 export async function readEncounter(slug: string, appointmentId: string, clinicDate: string, csrfToken: string, signal?: AbortSignal): Promise<Encounter> {
   if (!validId(appointmentId) || !validDate(clinicDate)) throw new ConsultationApiError(null, 'Invalid appointment selection');

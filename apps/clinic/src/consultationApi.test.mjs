@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  ConsultationApiError, finalizeEncounter, getConsultationQueue, readEncounter,
+  ConsultationApiError, finalizeEncounter, getConsultationQueue, readEncounter, searchMedicines,
   saveDraft, saveVitals,
 } from './consultationApi.ts';
 
@@ -17,6 +17,26 @@ const medicine = {
   name: 'Synthetic medicine', strength: '5 mg', dose: '1 tablet', route: 'oral',
   frequency: 'once daily', duration: '3 days', instructions: 'Synthetic instructions',
 };
+
+test('medicine lookup uses the clinic session and leaves dose selection to the doctor', async () => {
+  const restore = mockFetch(async (url, options) => {
+    assert.equal(url, '/api/workflow/clinics/goodwell/consultations/medicines/search');
+    assert.equal(options.method, 'POST');
+    assert.equal(options.credentials, 'include');
+    assert.equal(options.headers['X-CSRF-Token'], 'session-csrf');
+    assert.deepEqual(JSON.parse(options.body), { query: 'Synthetic tablet' });
+    return Response.json({ items: [{ id: 'med-1', name: 'Synthetic tablet A', strength: '5 mg', favorite: true }] });
+  });
+  try {
+    const items = await searchMedicines('goodwell', '  Synthetic  tablet ', 'session-csrf');
+    assert.deepEqual(items, [{ id: 'med-1', name: 'Synthetic tablet A', strength: '5 mg', favorite: true }]);
+    await assert.rejects(searchMedicines('goodwell', 'x', 'session-csrf'), ConsultationApiError);
+  } finally { restore(); }
+
+  const malformed = mockFetch(async () => Response.json({ items: [{ id: 'med-1', name: 'Synthetic tablet A' }] }));
+  try { await assert.rejects(searchMedicines('goodwell', 'tablet', 'session-csrf'), ConsultationApiError); }
+  finally { malformed(); }
+});
 
 function encounter(overrides = {}) {
   return {

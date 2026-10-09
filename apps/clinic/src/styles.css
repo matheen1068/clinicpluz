@@ -306,6 +306,15 @@ select:focus-visible, input:focus-visible { outline: 3px solid #82d6a3; outline-
 .consultation-med legend { padding: 0 6px; color: #285d42; font-size: 12px; font-weight: 760; }
 .consultation-med-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
 .consultation-med-fields label:last-child { grid-column: 1 / -1; }
+.consultation-catalog { position: relative; margin: 0 0 8px; }
+.consultation-catalog label { display: block; color: #315848; font-size: 12px; font-weight: 700; }
+.consultation-catalog input { width: 100%; min-height: 42px; margin-top: 7px; padding: 8px 10px; color: #1b3b32; border: 1px solid #cbded2; border-radius: 9px; background: #fff; font: inherit; font-size: 13px; }
+.consultation-catalog p, .consultation-catalog-hint { margin: 7px 0 10px; color: #668074; font-size: 11px; line-height: 1.45; }
+.consultation-catalog-results { max-height: 220px; overflow: auto; border: 1px solid #cbded2; border-radius: 9px; background: #fff; }
+.consultation-catalog-results button { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 0; border-bottom: 1px solid #e5eee7; background: #fff; color: #245640; text-align: left; cursor: pointer; }
+.consultation-catalog-results button:hover, .consultation-catalog-results button:focus-visible { background: #edf7ef; }
+.consultation-catalog-results button:last-child { border-bottom: 0; }
+.consultation-catalog-results small { display: block; margin-top: 2px; color: #647e6e; }
 .consultation-readonly { display: grid; gap: 13px; }
 .consultation-readonly > div { padding-bottom: 11px; border-bottom: 1px solid #e9f0ea; }
 .consultation-readonly strong { color: #294d3d; font-size: 12px; }

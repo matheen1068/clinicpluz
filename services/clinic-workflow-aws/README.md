@@ -1,6 +1,6 @@
 # ClinicPluz synthetic staging clinic workflow
 
-This service implements staff reception and a first nurse-to-doctor consultation flow behind the existing staff sign-in. Reception passed a Goodwell synthetic staging smoke test on 2026-10-10; the consultation changes in this branch have **not** been deployed. Neither slice is ready for real clinic records. The shared product contracts are in `docs/CLINIC_WORKFLOW_V1.md` and `docs/CONSULTATION_V1.md`.
+This service implements staff reception and a first nurse-to-doctor consultation flow behind the existing staff sign-in. Reception and consultation passed Goodwell synthetic staging checks on 2026-10-10. The medicine shortlist changes in this branch have **not** been deployed. Neither slice is ready for real clinic records. The shared product contracts are in `docs/CLINIC_WORKFLOW_V1.md` and `docs/CONSULTATION_V1.md`.
 
 ## API and access boundary
 
@@ -15,6 +15,7 @@ The same-origin routes are under `/api/workflow/clinics/:slug`:
 | POST | `/appointments` | `appointments` | Book with `patientId`, `doctorId`, timezone-bearing `startAt`, and `source` |
 | GET | `/consultations?date=YYYY-MM-DD` | `consultations` | Nurse clinic queue or doctor-assigned queue |
 | POST | `/consultations/read` | `consultations` | Read one encounter with IDs in the JSON body |
+| POST | `/consultations/medicines/search` | `consultations` | Doctor searches the clinic's medicine shortlist by name or strength |
 | POST | `/consultations/vitals` | `consultations` | Nurse or assigned doctor saves measured vitals |
 | POST | `/consultations/draft` | `consultations` | Assigned doctor saves notes and medication entries |
 | POST | `/consultations/finalize` | `consultations` | Assigned doctor finalizes a complete draft |
@@ -22,6 +23,14 @@ The same-origin routes are under `/api/workflow/clinics/:slug`:
 Every route requires the existing opaque `__Host-cpz_session` cookie and independently checks its hash in the auth table, expiry, clinic path, active clinic, active membership, Cognito user state, role, and the clinic's `ENTITLEMENTS` record. Only `clinic_admin`, `receptionist`, and `nurse` can access these first reception routes. Missing or disabled entitlement fails closed. POST additionally requires the exact configured `Origin` and the session's `X-CSRF-Token`; patient search is POST so names and phone numbers stay out of URLs. All responses are JSON with `Cache-Control: no-store`. No browser-supplied clinic ID, role, or entitlement grants access.
 
 The consultation routes are separate clinician permissions: `nurse` can see the clinic queue, read patient identity and vitals, and record vitals; `doctor` sees only appointments whose persisted doctor roster item has `staffSub` equal to that doctor's authenticated Cognito `sub`. Only that doctor can read, draft, and finalize clinical notes and prescription entries for those appointments. A nurse's read response omits notes, medication entries, and print data. `clinic_admin`, receptionist, lab, and billing roles have no consultation access, even if an entitlement is enabled. An old entitlement map without `consultations` is interpreted as disabled for consultation while reception continues to work. The browser cannot supply `staffSub` or a doctor role.
+
+### Clinic medicine shortlist
+
+The doctor can search a **clinic-specific** shortlist while entering a prescription. Search fills only the selected item's name and strength; dose, route, frequency, duration, and instructions remain doctor-entered. The doctor can edit any populated text or enter a medicine manually when no item matches. A `favorite` flag sorts clinic-preferred items first, but is not a treatment recommendation. This does not perform medicine safety checks.
+
+`POST /consultations/medicines/search` accepts only `{ "query": "..." }` with 2–64 letters/numbers and common name punctuation, after whitespace normalization. It returns at most 20 active matches as `{ "items": [{ "id", "name", "strength", "favorite" }] }`. It requires the existing doctor role, consultation entitlement, session, clinic match, Origin, and CSRF checks. No medicine text appears in the URL.
+
+For the synthetic pilot, operators may create shortlist items in the existing **clinical** DynamoDB table. Each item has `pk` (String) = `CLINIC#goodwell#MEDICINES`, `sk` (String) = `MEDICINE#<unique-id>`, `id` (String) = the same unique ID, `name` (String, including dosage form when applicable), `strength` (String), `active` (Boolean) = `true`, and optional `favorite` (Boolean). Use only fictitious medicine names in staging. There is no global medicine list or automatic import. The pilot caps each clinic partition at 200 items; exceeding that limit fails closed until search indexing and pagination are designed. No new AWS resource or CloudFront behavior is needed, but the workflow SAM stack must be redeployed for the new route and the clinic frontend uploaded again.
 
 ### Exact consultation JSON contract
 
@@ -31,6 +40,7 @@ All consultation POST requests have `Content-Type: application/json`, an exact p
 | --- | --- | --- |
 | `GET /consultations?date=YYYY-MM-DD` | none | `{ "items": [{ "appointmentId", "clinicDate", "patientId", "patientName", "doctorId", "doctorName", "startAt", "appointmentStatus", "encounterStatus" }] }` |
 | `POST /consultations/read` | `{ "appointmentId", "clinicDate" }` | `{ "encounter": { ... } }` |
+| `POST /consultations/medicines/search` | `{ "query" }` | `{ "items": [{ "id", "name", "strength", "favorite" }] }` |
 | `POST /consultations/vitals` | `{ "appointmentId", "clinicDate", "expectedRevision", "vitals": { "observedAt", "systolicBpMmHg"?, "diastolicBpMmHg"?, "pulseBpm"?, "spo2Percent"?, "temperatureC"?, "weightKg"?, "heightCm"? } }` | `200` with updated `{ "encounter": { ... } }` |
 | `POST /consultations/draft` | `{ "appointmentId", "clinicDate", "expectedRevision", "note": { "chiefComplaint", "history", "exam", "assessment", "plan" }, "medications": [{ "name", "strength", "dose", "route", "frequency", "duration", "instructions" }] }` | `200` with updated `{ "encounter": { ... } }` |
 | `POST /consultations/finalize` | `{ "appointmentId", "clinicDate", "expectedRevision" }` | `200` with finalized `{ "encounter": { ... } }` and print payload only if medications exist |
@@ -66,6 +76,6 @@ The staging CloudFront `/api/*` behavior points at the auth API. The more specif
 
 ## Checks and limits
 
-With Node.js 24 available, run `npm test` for the pure domain/security tests and `npm run typecheck` after installing dependencies. The tests cover cross-clinic denial, role and entitlement gates, Cognito revocation, CSRF and private search, schedule boundaries, appointment conflict, doctor queue scoping, nurse vitals, doctor draft/finalization, print availability, stale revision, and malformed input. The consultation routes and AWS adapter have not been built, validated by SAM, deployed, or tested against live DynamoDB in this branch.
+With Node.js 24 available, run `npm test` for the pure domain/security tests and `npm run typecheck` after installing dependencies. The tests cover cross-clinic denial, role and entitlement gates, Cognito revocation, CSRF and private search, schedule boundaries, appointment conflict, doctor queue scoping, nurse vitals, doctor draft/finalization, print availability, stale revision, malformed input, and clinic medicine search. The medicine-search route and AWS adapter changes have not yet been built or validated by SAM, deployed, or tested against live DynamoDB.
 
 This slice deliberately omits cancellation, rescheduling, doctor shifts, holidays, correction/addendum to finalized notes, clinical signatures/credentials, billing, and email dispatch. Search keys currently include plaintext normalized names and phone digits, and lookup rows duplicate patient fields. That data layout, privacy controls, retention, recovery, audit access, printed prescription legal fields, and operational monitoring need review before real patient data. `ageYears` is a registration snapshot, not a calculated current age. No real clinic or patient data should be entered into this synthetic staging service.

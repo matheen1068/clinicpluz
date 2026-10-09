@@ -6,6 +6,7 @@ import {
 } from './consultationApi';
 import { completeForFinalize, emptyMedication, emptyNote, mergeRecoveredFields, parseVitalForm, snapshotEdits, VITAL_FIELDS, vitalFormFrom, type RecoverySnapshot, type VitalForm } from './consultationForm';
 import { pilotDateToday } from './workflowApi';
+import { MedicineEntry } from './MedicineEntry';
 
 interface Props {
   clinicSlug: string;
@@ -306,7 +307,10 @@ function ConsultationDesk({ clinicSlug, csrfToken, role, onSessionLost, onDirtyC
               <div className="consultation-note-fields">{NOTE_FIELDS.map(({ key, label }) => <label key={key}>{label}{(key === 'assessment' || key === 'plan') && <span className="workflow-optional"> required before finalizing</span>}<textarea rows={key === 'history' || key === 'exam' ? 3 : 2} maxLength={3000} value={note[key]} onChange={(event) => setNote({ ...note, [key]: event.target.value })} disabled={!!pending || needsReload} /></label>)}</div>
               <div className="consultation-meds-head"><h5>Doctor-entered prescription items</h5><button type="button" className="workflow-link" disabled={!!pending || needsReload || medications.length >= 20} onClick={() => setMedications([...medications, emptyMedication()])}>Add medicine</button></div>
               {medications.length === 0 && <p className="workflow-empty">No medicine entries. A consultation may be finalized without a prescription.</p>}
-              {medications.map((medicine, index) => <fieldset className="consultation-med" key={index}><legend>Medicine {index + 1}</legend><div className="consultation-med-fields">{MEDICATION_FIELDS.map(({ key, label }) => <label key={key}>{label}{key === 'strength' && <span className="workflow-optional"> optional</span>}<input type="text" maxLength={key === 'instructions' ? 500 : 160} required={key === 'name'} value={medicine[key]} onChange={(event) => setMedications(medications.map((item, itemIndex) => itemIndex === index ? { ...item, [key]: event.target.value } : item))} disabled={!!pending || needsReload} /></label>)}</div><button type="button" className="workflow-link" disabled={!!pending || needsReload} onClick={() => setMedications(medications.filter((_, itemIndex) => itemIndex !== index))}>Remove medicine {index + 1}</button></fieldset>)}
+              {medications.map((medicine, index) => <MedicineEntry key={index} clinicSlug={clinicSlug} csrfToken={csrfToken}
+                index={index} medicine={medicine} disabled={!!pending || needsReload} onSessionLost={onSessionLost}
+                onChange={(value) => setMedications((current) => current.map((item, itemIndex) => itemIndex === index ? value : item))}
+                onRemove={() => setMedications((current) => current.filter((_, itemIndex) => itemIndex !== index))} />)}
               <button className="workflow-action consultation-save" type="submit" disabled={!!pending || needsReload || !noteDirty}>Save consultation draft</button>
             </form>}
           </section>}

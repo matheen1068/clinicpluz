@@ -11,6 +11,7 @@ export interface Clinic { slug: string; active: boolean; displayName?: string }
 export interface Membership { clinicSlug: string; username: string; cognitoUsername: string; sub: string; role: Role; active: boolean; displayName?: string }
 export interface Entitlements { clinicSlug: string; patient_intake: boolean; appointments: boolean; consultations: boolean }
 export interface Doctor { id: string; displayName: string; active: boolean; staffSub?: string }
+export interface MedicineCatalogItem { id: string; name: string; strength: string; active: boolean; favorite: boolean }
 export interface Schedule { timezone: string; openMinute: number; closeMinute: number; slotMinutes: number }
 export interface Patient {
   id: string; fullName: string; phone: string; ageYears: number; sex: Sex;
@@ -31,6 +32,7 @@ export interface StaffIdentity { isActive(cognitoUsername: string, sub: string):
 export interface WorkflowStore {
   getSchedule(slug: string): Promise<Schedule | null>;
   listDoctors(slug: string): Promise<Doctor[]>;
+  listMedicines(slug: string): Promise<MedicineCatalogItem[]>;
   getDoctor(slug: string, id: string): Promise<Doctor | null>;
   searchPatients(slug: string, kind: 'name' | 'phone', prefix: string): Promise<Patient[]>;
   getPatient(slug: string, id: string): Promise<Patient | null>;
@@ -191,7 +193,7 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
       try {
         if (!safeEqual(input.headers['x-clinicpluz-edge-key'] ?? '', config.edgeKey)) return result(403, { error: 'Forbidden' });
         if (input.headers.origin && input.headers.origin !== config.publicOrigin) return result(403, { error: 'Origin rejected' });
-        const match = /^\/api\/workflow\/clinics\/([a-z0-9-]+)\/(doctors|patients(?:\/search)?|appointments|consultations(?:\/(?:read|vitals|draft|finalize))?)$/.exec(input.path);
+        const match = /^\/api\/workflow\/clinics\/([a-z0-9-]+)\/(doctors|patients(?:\/search)?|appointments|consultations(?:\/(?:read|vitals|draft|finalize|medicines\/search))?)$/.exec(input.path);
         if (!match || !slug(match[1])) return result(404, { error: 'Not found' });
         const clinicSlug = match[1];
         const endpoint = match[2];
@@ -213,7 +215,8 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
         if (!modules || modules.clinicSlug !== clinicSlug || modules[module] !== true) return result(403, { error: 'Module unavailable' });
         if (isConsultation) {
           if (member.role !== 'nurse' && member.role !== 'doctor') return result(403, { error: 'Role not allowed' });
-          if ((endpoint === 'consultations/draft' || endpoint === 'consultations/finalize') && member.role !== 'doctor') {
+          if ((endpoint === 'consultations/draft' || endpoint === 'consultations/finalize' ||
+              endpoint === 'consultations/medicines/search') && member.role !== 'doctor') {
             return result(403, { error: 'Role not allowed' });
           }
         } else {
@@ -226,6 +229,23 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
         if (input.method === 'GET' && endpoint === 'doctors' && !(input.queryString ?? '')) {
           const doctors = await store.listDoctors(clinicSlug);
           return result(200, { items: doctors.filter((doctor) => doctor.active).map(({ id, displayName }) => ({ id, displayName })) });
+        }
+        if (input.method === 'POST' && endpoint === 'consultations/medicines/search' && !(input.queryString ?? '')) {
+          const request = body(input, 256);
+          if (!request || !hasOnly(request, ['query']) || typeof request.query !== 'string') {
+            return result(400, { error: 'Invalid medicine search' });
+          }
+          const query = request.query.trim().replace(/\s+/g, ' ').normalize('NFKC').toLocaleLowerCase('en-US');
+          if (query.length < 2 || query.length > 64 || !/^[\p{L}\p{M}\p{N} .'-]+$/u.test(query)) {
+            return result(400, { error: 'Invalid medicine search' });
+          }
+          const medicines = await store.listMedicines(clinicSlug);
+          const items = medicines.filter((item) => item.active &&
+            `${item.name} ${item.strength}`.normalize('NFKC').toLocaleLowerCase('en-US').includes(query))
+            .sort((a, b) => Number(b.favorite) - Number(a.favorite) || a.name.localeCompare(b.name) || a.strength.localeCompare(b.strength))
+            .slice(0, 20)
+            .map(({ id, name, strength, favorite }) => ({ id, name, strength, favorite }));
+          return result(200, { items });
         }
         if (input.method === 'POST' && endpoint === 'patients/search' && !(input.queryString ?? '')) {
           const request = body(input);
