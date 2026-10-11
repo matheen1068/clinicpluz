@@ -1,6 +1,6 @@
 # Clinic App consultation — synthetic pilot contract
 
-Status: in development. The reception workflow has passed a Goodwell staging smoke test; this consultation slice has not been deployed or validated in AWS. Use fictional records only.
+Status: synthetic staging pilot. Reception and consultation screens have been exercised with fictional Goodwell records in AWS staging by 2026-10-10. This is not approval for real clinic records.
 
 ## Staff flow
 

@@ -7,6 +7,7 @@ import {
 import { completeForFinalize, emptyMedication, emptyNote, mergeRecoveredFields, parseVitalForm, snapshotEdits, VITAL_FIELDS, vitalFormFrom, type RecoverySnapshot, type VitalForm } from './consultationForm';
 import { pilotDateToday } from './workflowApi';
 import { MedicineEntry } from './MedicineEntry';
+import PatientHistory from './PatientHistory';
 
 interface Props {
   clinicSlug: string;
@@ -292,6 +293,11 @@ function ConsultationDesk({ clinicSlug, csrfToken, role, onSessionLost, onDirtyC
       <div className="consultation-main">
         {!selected ? <section className="workflow-card consultation-empty" role="status"><span className="workflow-step">02</span><h4>Select a visit</h4><p>Choose an existing appointment from the list to view or record its encounter.</p></section> : readLoading ? <section className="workflow-card consultation-empty" role="status"><h4>Loading encounter…</h4><p>Checking visit and staff access.</p></section> : readError || !encounter ? <><section className="workflow-card consultation-empty" role="alert"><h4 ref={readErrorRef} tabIndex={-1}>Encounter unavailable</h4><p>{readError || 'The encounter could not be verified.'}</p><button type="button" className="workflow-link" onClick={reloadEncounter}>Retry encounter</button></section>{recoverySnapshot && <RecoveryCopy snapshot={recoverySnapshot} doctorRole={doctorRole} canRestore={false} onRestore={restoreLocalEdits} onDiscard={() => setRecoverySnapshot(null)} />}</> : <>
           <section className="workflow-card consultation-identity" aria-labelledby="encounter-heading"><div className="consultation-identity-top"><div><span className="eyebrow">VISIT RECORD</span><h4 id="encounter-heading">{encounter.patient.fullName}</h4><p>{encounter.patient.ageYears} years at registration · {encounter.patient.sex} · {encounter.doctor.displayName}</p></div><span className={`consultation-status${encounter.status === 'finalized' ? ' is-final' : ''}`}>{encounter.status === 'finalized' ? 'Finalized' : encounter.revision === 0 ? 'Not started' : 'Draft'}</span></div><p className="consultation-meta">Appointment: {clinicTime(selected.startAt)} · Clinic date: {selected.clinicDate} · {encounter.clinic.displayName}</p>{encounter.status === 'finalized' && encounter.finalizedAt && <p className="consultation-meta">Finalized: {clinicTime(encounter.finalizedAt)}</p>}</section>
+
+          {doctorRole && <PatientHistory key={`${clinicSlug}:${selected.appointmentId}:${selected.clinicDate}:${encounter.patient.id}`}
+            clinicSlug={clinicSlug} appointmentId={selected.appointmentId} clinicDate={selected.clinicDate}
+            patientId={encounter.patient.id} currentVisitAt={selected.startAt} csrfToken={csrfToken}
+            onSessionLost={onSessionLost} />}
 
           {actionError && <div className="workflow-error consultation-feedback" role="alert"><p>{actionError}</p>{needsReload && <button type="button" className="workflow-link" onClick={reloadEncounter}>Reload server record</button>}</div>}
           {actionSuccess && <p className="workflow-success consultation-feedback" role="status">{actionSuccess}</p>}

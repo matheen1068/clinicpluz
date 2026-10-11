@@ -8,6 +8,7 @@ import type {
   Role, Session, StaffIdentity, WorkflowStore, Sex, Source, AppointmentStatus, Schedule,
 } from './core.js';
 import type { Encounter } from './consultation.js';
+import { historyIdFor, type HistoryEntry } from './history.js';
 import { randomUUID } from 'node:crypto';
 
 type Item = Record<string, AttributeValue>;
@@ -76,6 +77,24 @@ function appointment(item: Item): Appointment {
     doctorId: string(item, 'doctorId'), doctorName: string(item, 'doctorName'),
     startAt: string(item, 'startAt'), startUtc: string(item, 'startUtc'), clinicDate: string(item, 'clinicDate'),
     source, status, createdAt: string(item, 'createdAt'), createdBySub: string(item, 'createdBySub') };
+}
+function historyEntry(item: Item, slug: string, patientId: string): HistoryEntry {
+  const appointmentId = string(item, 'appointmentId');
+  const visitUtc = string(item, 'visitUtc');
+  const historyId = historyIdFor(visitUtc, appointmentId);
+  const visitAt = string(item, 'visitAt');
+  const finalizedAt = string(item, 'finalizedAt');
+  const displayName = string(item, 'finalizedByDisplayName');
+  if (string(item, 'pk') !== `CLINIC#${slug}#PATIENT#${patientId}#HISTORY` ||
+      string(item, 'sk') !== historyId || string(item, 'clinicSlug') !== slug ||
+      string(item, 'patientId') !== patientId || string(item, 'status') !== 'finalized' ||
+      Number.isNaN(Date.parse(visitAt)) || new Date(visitAt).toISOString() !== visitUtc ||
+      Number.isNaN(Date.parse(finalizedAt)) || displayName.length > 160) {
+    throw new Error('Invalid history index');
+  }
+  return { historyId, clinicSlug: slug, patientId, appointmentId,
+    clinicDate: string(item, 'clinicDate'), visitAt, visitUtc, finalizedAt, status: 'finalized',
+    doctor: { id: string(item, 'finalizedDoctorId'), displayName } };
 }
 
 export class DynamoAuthStore implements AuthStore {
@@ -256,6 +275,25 @@ export class DynamoWorkflowStore implements WorkflowStore {
         !encounter.note || !Array.isArray(encounter.medications)) throw new Error('Invalid encounter');
     return encounter;
   }
+  async listPatientHistory(slug: string, patientId: string, before: string, limit: number): Promise<HistoryEntry[]> {
+    if (limit !== 11) throw new Error('Invalid history page size');
+    const response = await this.client.send(new QueryCommand({
+      TableName: this.table, ConsistentRead: true,
+      KeyConditionExpression: 'pk = :pk AND sk < :before',
+      ExpressionAttributeValues: {
+        ':pk': s(`CLINIC#${slug}#PATIENT#${patientId}#HISTORY`), ':before': s(before),
+      }, ScanIndexForward: false, Limit: limit,
+    }));
+    const rows = response.Items ?? [];
+    if (rows.length > limit || (response.LastEvaluatedKey && rows.length < limit)) {
+      throw new Error('Incomplete history page');
+    }
+    return rows.map((item) => historyEntry(item, slug, patientId));
+  }
+  async getHistoryEntry(slug: string, patientId: string, historyId: string): Promise<HistoryEntry | null> {
+    const item = await this.get(`CLINIC#${slug}#PATIENT#${patientId}#HISTORY`, historyId);
+    return item ? historyEntry(item, slug, patientId) : null;
+  }
   async listEncounterStatuses(slug: string, clinicDate: string): Promise<Map<string, 'draft' | 'finalized'>> {
     const rows = await this.query(`CLINIC#${slug}#ENCOUNTERS#${clinicDate}`, 'APPOINTMENT#', 200);
     const statuses = new Map<string, 'draft' | 'finalized'>();
@@ -269,6 +307,12 @@ export class DynamoWorkflowStore implements WorkflowStore {
   async saveEncounter(slug: string, appointment: Appointment, encounter: Encounter,
     expectedRevision: number, actorSub: string, action: 'vitals.saved' | 'draft.saved' | 'encounter.finalized',
     assignedDoctorSub?: string): Promise<boolean> {
+    const finalized = action === 'encounter.finalized';
+    if ((encounter.status === 'finalized') !== finalized ||
+        (finalized && (!encounter.finalizedAt || !encounter.finalizedBySub ||
+          !encounter.finalizedByDisplayName || encounter.finalizedDoctorId !== appointment.doctorId))) {
+      throw new Error('Invalid encounter transition');
+    }
     const checks: TransactWriteItem[] = [
       { ConditionCheck: { TableName: this.table,
         Key: { pk: s(`CLINIC#${slug}#APPOINTMENTS#${appointment.clinicDate}`),
@@ -311,13 +355,24 @@ export class DynamoWorkflowStore implements WorkflowStore {
           action: s(action), actorSub: s(actorSub), targetId: s(encounter.appointmentId),
           at: s(at), revision: n(encounter.revision),
         }, ConditionExpression: 'attribute_not_exists(pk)' } },
+        ...(finalized ? [{ Put: { TableName: this.table, Item: {
+          pk: s(`CLINIC#${slug}#PATIENT#${appointment.patientId}#HISTORY`),
+          sk: s(historyIdFor(appointment.startUtc, appointment.id)), clinicSlug: s(slug),
+          patientId: s(appointment.patientId), appointmentId: s(appointment.id),
+          clinicDate: s(appointment.clinicDate), visitAt: s(appointment.startAt),
+          visitUtc: s(appointment.startUtc), status: s('finalized'),
+          finalizedAt: s(encounter.finalizedAt!), finalizedDoctorId: s(encounter.finalizedDoctorId!),
+          finalizedByDisplayName: s(encounter.finalizedByDisplayName!),
+        }, ConditionExpression: 'attribute_not_exists(pk)' } } satisfies TransactWriteItem] : []),
       ] }));
       return true;
     } catch (error) {
       if (error instanceof Error && error.name === 'TransactionCanceledException') {
         const reasons = (error as Error & { CancellationReasons?: Array<{ Code?: string }> }).CancellationReasons;
         if (reasons?.[encounterWriteIndex]?.Code === 'ConditionalCheckFailed' &&
-            reasons.every((reason, index) => index === encounterWriteIndex || !reason.Code || reason.Code === 'None')) return false;
+            reasons.every((reason, index) => index === encounterWriteIndex ||
+              (finalized && index === encounterWriteIndex + 2 && reason.Code === 'ConditionalCheckFailed') ||
+              !reason.Code || reason.Code === 'None')) return false;
       }
       throw error;
     }

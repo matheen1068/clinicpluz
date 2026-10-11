@@ -276,6 +276,33 @@ select:focus-visible, input:focus-visible { outline: 3px solid #82d6a3; outline-
 .consultation-section form { margin: 0; }
 .consultation-feedback { margin: 0; }
 .consultation-feedback p { margin: 0 0 10px; }
+.consultation-history .workflow-card-head { margin-bottom: 10px; }
+.consultation-history .workflow-step { font-size: 9px; white-space: nowrap; }
+.consultation-history-refresh { margin: 0 0 12px; }
+.consultation-history-intro { margin: 0 0 16px; color: #668074; font-size: 11px; line-height: 1.6; }
+.consultation-history-layout { display: grid; grid-template-columns: minmax(175px, 30%) minmax(0, 1fr); gap: 16px; }
+.consultation-history-list ul { display: grid; gap: 8px; max-height: 480px; margin: 0; padding: 0; overflow: auto; list-style: none; }
+.consultation-history-visit { display: grid; gap: 5px; width: 100%; padding: 11px 12px; border: 1px solid #dce8e0; border-radius: 10px; background: #fbfdfb; color: #426752; text-align: left; font-size: 11px; line-height: 1.4; }
+.consultation-history-visit:hover, .consultation-history-visit.is-selected { border-color: #79bb8f; background: #edf8f0; }
+.consultation-history-visit:focus-visible { outline: 3px solid #249466; outline-offset: 2px; }
+.consultation-history-visit strong { color: #204b39; font-size: 12px; }
+.consultation-history-visit small { color: #6c8174; }
+.consultation-history-more { margin-top: 10px; }
+.consultation-history-detail { min-width: 0; padding: 16px; border: 1px solid #e0eae2; border-radius: 12px; background: #f9fcfa; }
+.consultation-history-detail .workflow-empty, .consultation-history-detail .workflow-error { margin-top: 0; }
+.consultation-history-detail-head h5 { margin: 0 0 5px; color: #1c4734; font-size: 15px; }
+.consultation-history-detail-head h5:focus-visible { outline: 2px solid #249466; outline-offset: 3px; }
+.consultation-history-detail-head p, .consultation-history-block p { margin: 4px 0; color: #526d5d; font-size: 11px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.consultation-history-block { margin-top: 15px; padding-top: 13px; border-top: 1px solid #dfebe2; }
+.consultation-history-block h6 { margin: 0 0 9px; color: #224936; font-size: 12px; }
+.consultation-history-block dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 10px 0 0; }
+.consultation-history-block dl > div { padding: 8px; border: 1px solid #e0ebe4; border-radius: 8px; background: #fff; }
+.consultation-history-block dt { color: #6b8373; font-size: 10px; }
+.consultation-history-block dd { margin: 3px 0 0; color: #204b39; font-size: 12px; font-weight: 750; }
+.consultation-history-note { margin: 8px 0; }
+.consultation-history-note strong, .consultation-history-block li strong { color: #2c513d; font-size: 11px; }
+.consultation-history-block ol { margin: 0; padding-left: 22px; }
+.consultation-history-block li { padding: 6px 0; }
 .consultation-recovery { border-color: #e7d5ad; background: #fffdf7; }
 .consultation-recovery h4 { margin: 0 0 8px; color: #5e4a28; }
 .consultation-recovery > p, .consultation-recovery-content p, .consultation-recovery-content li { color: #615c4f; font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -337,6 +364,8 @@ select:focus-visible, input:focus-visible { outline: 3px solid #82d6a3; outline-
   .consultation-visit-list { grid-template-columns: repeat(2, minmax(0, 1fr)); max-height: none; }
 }
 @media (max-width: 650px) {
+  .consultation-history-layout { grid-template-columns: 1fr; }
+  .consultation-history-list ul { max-height: 300px; }
   .consultation-vital-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .consultation-note-fields, .consultation-med-fields { grid-template-columns: 1fr; }
   .consultation-note-fields label:first-child, .consultation-note-fields label:last-child, .consultation-med-fields label:last-child { grid-column: auto; }

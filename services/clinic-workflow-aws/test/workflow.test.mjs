@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createWorkflowApp } from '../src/core.ts';
 import { fromHttpApiEvent } from '../src/http-api.ts';
+import { historyIdFor } from '../src/history.ts';
 
 const ORIGIN = 'https://example123.cloudfront.net';
 const EDGE_KEY = 'e'.repeat(48);
@@ -91,6 +92,7 @@ function setup() {
   const patients = new Map();
   const appointments = new Map();
   const encounters = new Map();
+  const history = new Map();
   const occupied = new Set();
   const audit = [];
   const store = {
@@ -121,6 +123,14 @@ function setup() {
     async getEncounter(slug, date, appointmentId) {
       return encounters.get(`${slug}/${date}/${appointmentId}`) ?? null;
     },
+    async listPatientHistory(slug, patientId, before, limit) {
+      return [...history.values()].filter((row) => row.clinicSlug === slug &&
+        row.patientId === patientId && row.historyId < before)
+        .sort((a, b) => b.historyId.localeCompare(a.historyId)).slice(0, limit);
+    },
+    async getHistoryEntry(slug, patientId, historyId) {
+      return history.get(`${slug}/${patientId}/${historyId}`) ?? null;
+    },
     async listEncounterStatuses(slug, date) {
       return new Map([...(encounters.entries())]
         .filter(([key]) => key.startsWith(`${slug}/${date}/`))
@@ -136,6 +146,16 @@ function setup() {
       if (assignedDoctorSub && !(doctors.get(slug) ?? []).some((doctor) => doctor.id === appointment.doctorId &&
           doctor.active && doctor.staffSub === assignedDoctorSub)) throw new Error('Doctor mapping changed');
       encounters.set(key, encounter);
+      if (action === 'encounter.finalized') {
+        const historyId = historyIdFor(appointment.startUtc, appointment.id);
+        const indexKey = `${slug}/${appointment.patientId}/${historyId}`;
+        if (history.has(indexKey)) throw new Error('History pointer already exists');
+        history.set(indexKey, { historyId, clinicSlug: slug, patientId: appointment.patientId,
+          appointmentId: appointment.id, clinicDate: appointment.clinicDate,
+          visitAt: appointment.startAt, visitUtc: appointment.startUtc,
+          status: 'finalized', finalizedAt: encounter.finalizedAt,
+          doctor: { id: encounter.finalizedDoctorId, displayName: encounter.finalizedByDisplayName } });
+      }
       audit.push({ action, slug, actorSub, revision: encounter.revision });
       return true;
     },
@@ -152,7 +172,7 @@ function setup() {
     });
     return { status: response.statusCode, body: JSON.parse(response.body), headers: response.headers };
   }
-  return { call, auth, store, sessions, clinics, members, modules, schedules, doctors, medicines, patients, appointments, encounters,
+  return { call, auth, store, sessions, clinics, members, modules, schedules, doctors, medicines, patients, appointments, encounters, history,
     audit, setCognitoActive: (value) => { cognitoActive = value; } };
 }
 const patient = { fullName: 'Amina Khan', phone: '+91 98765 43210', ageYears: 38, sex: 'female', email: 'amina@example.test' };
@@ -173,6 +193,23 @@ async function seedAppointment(world, doctorId = 'd1') {
   });
   assert.equal(booked.status, 201);
   return { appointmentId: booked.body.appointment.id, clinicDate: '2026-10-10' };
+}
+
+async function bookFor(world, patientId, doctorId, startAt) {
+  const booked = await world.call('POST', `${ROOT}/goodwell/appointments`,
+    { patientId, doctorId, startAt, source: 'walk_in' });
+  assert.equal(booked.status, 201);
+  return { appointmentId: booked.body.appointment.id, clinicDate: startAt.slice(0, 10) };
+}
+
+async function finalizeFor(world, selected, clinician = doctorSession) {
+  const draft = await world.call('POST', `${consultationBase}/draft`,
+    { ...selected, expectedRevision: 0, note, medications }, clinician);
+  assert.equal(draft.status, 200);
+  const finalized = await world.call('POST', `${consultationBase}/finalize`,
+    { ...selected, expectedRevision: 1 }, clinician);
+  assert.equal(finalized.status, 200);
+  return finalized;
 }
 
 test('session, clinic, role, Cognito state, and entitlements are checked on every request', async () => {
@@ -336,6 +373,10 @@ test('nurse vitals, doctor draft, and doctor finalization preserve attribution a
     'doctor-sub-1');
   assert.equal((await world.call('POST', `${consultationBase}/finalize`,
     { ...selected, expectedRevision: 2 }, nurseSession)).status, 403);
+  world.members.get('goodwell/doctor1').displayName = 'D'.repeat(161);
+  assert.equal((await world.call('POST', `${consultationBase}/finalize`,
+    { ...selected, expectedRevision: 2 }, doctorSession)).status, 503);
+  world.members.get('goodwell/doctor1').displayName = 'Dr One';
   const finalized = await world.call('POST', `${consultationBase}/finalize`,
     { ...selected, expectedRevision: 2 }, doctorSession);
   assert.equal(finalized.status, 200);
@@ -353,6 +394,7 @@ test('nurse vitals, doctor draft, and doctor finalization preserve attribution a
     { ...selected, expectedRevision: 3, note, medications }, doctorSession)).status, 409);
   assert.equal((await world.call('POST', `${consultationBase}/finalize`,
     { ...selected, expectedRevision: 3 }, doctorSession)).status, 409);
+  assert.equal(world.history.size, 1);
   assert.deepEqual(world.audit.filter((entry) => entry.action.includes('saved') || entry.action === 'encounter.finalized')
     .map((entry) => entry.action), ['vitals.saved', 'draft.saved', 'encounter.finalized']);
 });
@@ -457,4 +499,169 @@ test('finalized prescription retains the finalizing clinician when roster or mem
   world.doctors.get('goodwell')[0].staffSub = 'doctor-sub-1';
   assert.deepEqual((await world.call('POST', `${consultationBase}/read`, selected, doctorSession))
     .body.printablePrescription.doctor, { id: 'd1', displayName: 'Dr One' });
+});
+
+test('assigned doctor reads only earlier finalized history for the same clinic patient', async () => {
+  const world = setup();
+  const p1 = (await world.call('POST', `${ROOT}/goodwell/patients`, patient)).body.patient.id;
+  const p2 = (await world.call('POST', `${ROOT}/goodwell/patients`,
+    { ...patient, fullName: 'Second Fictional Patient', phone: '+91 98765 43211' })).body.patient.id;
+  const prior = await bookFor(world, p1, 'd2', '2026-10-10T09:30:00+05:30');
+  const draftOnly = await bookFor(world, p1, 'd2', '2026-10-10T10:00:00+05:30');
+  const otherPatient = await bookFor(world, p2, 'd2', '2026-10-10T10:30:00+05:30');
+  const selected = await bookFor(world, p1, 'd1', '2026-10-10T11:00:00+05:30');
+  const sameTime = await bookFor(world, p1, 'd2', '2026-10-10T11:00:00+05:30');
+  const later = await bookFor(world, p1, 'd2', '2026-10-10T11:30:00+05:30');
+  await finalizeFor(world, prior, otherDoctorSession);
+  assert.equal((await world.call('POST', `${consultationBase}/draft`,
+    { ...draftOnly, expectedRevision: 0, note, medications }, otherDoctorSession)).status, 200);
+  await finalizeFor(world, otherPatient, otherDoctorSession);
+  await finalizeFor(world, sameTime, otherDoctorSession);
+  await finalizeFor(world, later, otherDoctorSession);
+  await finalizeFor(world, selected, doctorSession);
+  const path = `${consultationBase}/history/list`;
+  const listed = await world.call('POST', path, selected, doctorSession);
+  assert.equal(listed.status, 200);
+  assert.equal(listed.headers['cache-control'], 'no-store');
+  assert.equal(listed.body.coverage, 'indexed_finalizations_only');
+  assert.equal(listed.body.nextCursor, null);
+  assert.equal(listed.body.items.length, 1);
+  const item = listed.body.items[0];
+  assert.equal(item.patientId, p1);
+  assert.equal(item.clinicSlug, 'goodwell');
+  assert.equal(item.status, 'finalized');
+  assert.equal(item.visitAt, '2026-10-10T09:30:00+05:30');
+  assert.deepEqual(item.doctor, { id: 'd2', displayName: 'Dr Two' });
+  const detailPath = `${consultationBase}/history/detail`;
+  const detail = await world.call('POST', detailPath,
+    { ...selected, historyId: item.historyId }, doctorSession);
+  assert.equal(detail.status, 200);
+  assert.equal(detail.body.history.status, 'finalized');
+  assert.equal(detail.body.history.patientId, p1);
+  assert.deepEqual(detail.body.history.note, note);
+  assert.equal(detail.body.history.medications[0].dose, '1 tablet');
+  assert.equal(detail.body.history.vitals, null);
+  world.doctors.get('goodwell')[1].displayName = 'Renamed Doctor';
+  world.members.get('goodwell/doctor2').displayName = 'Renamed Account';
+  assert.deepEqual((await world.call('POST', detailPath,
+    { ...selected, historyId: item.historyId }, doctorSession)).body.history.doctor,
+  { id: 'd2', displayName: 'Dr Two' });
+
+  const allIds = [...world.history.values()];
+  const idFor = (appointmentId) => allIds.find((row) => row.appointmentId === appointmentId)?.historyId;
+  for (const historyId of [idFor(otherPatient.appointmentId), idFor(sameTime.appointmentId),
+    idFor(later.appointmentId),
+    idFor(selected.appointmentId), historyIdFor('2026-10-10T04:30:00.000Z', draftOnly.appointmentId)]) {
+    assert.equal((await world.call('POST', detailPath,
+      { ...selected, historyId }, doctorSession)).status, 404);
+  }
+  assert.equal((await world.call('POST', path, selected, otherDoctorSession)).status, 403);
+  assert.equal((await world.call('POST', path, selected, nurseSession)).status, 403);
+  assert.equal((await world.call('POST', path, selected)).status, 403);
+  assert.equal((await world.call('POST', detailPath,
+    { ...selected, historyId: item.historyId }, nurseSession)).status, 403);
+  assert.equal((await world.call('POST', detailPath,
+    { ...selected, historyId: item.historyId })).status, 403);
+  assert.equal((await world.call('POST', `${ROOT}/blesswell/consultations/history/list`,
+    selected, doctorSession)).status, 403);
+  const blessCookie = 'b'.repeat(43);
+  world.sessions.set(createHash('sha256').update(blessCookie).digest('hex'), {
+    clinicSlug: 'blesswell', username: 'blessdoctor', sub: 'bless-doctor-sub', csrfToken: CSRF,
+    expiresAt: Math.floor(NOW.getTime() / 1000) + 3600,
+  });
+  world.members.set('blesswell/blessdoctor', { clinicSlug: 'blesswell', username: 'blessdoctor',
+    cognitoUsername: 'internal-bless-doctor', sub: 'bless-doctor-sub', displayName: 'Blesswell Doctor',
+    role: 'doctor', active: true });
+  world.doctors.get('blesswell')[0].staffSub = 'bless-doctor-sub';
+  world.patients.set('blesswell', new Map([[p1, { ...world.patients.get('goodwell').get(p1) }]]));
+  world.appointments.set('blesswell', [{ ...world.appointments.get('goodwell')
+    .find((row) => row.id === selected.appointmentId), doctorId: 'd1' }]);
+  assert.equal((await world.call('POST', `${ROOT}/blesswell/consultations/history/detail`,
+    { ...selected, historyId: item.historyId },
+    { cookies: [`__Host-cpz_session=${blessCookie}`] })).status, 404);
+  assert.equal((await world.call('POST', path, selected,
+    { ...doctorSession, headers: { 'x-csrf-token': 'wrong' } })).status, 403);
+  assert.equal((await world.call('POST', detailPath, { ...selected, historyId: item.historyId },
+    { ...doctorSession, headers: { origin: 'https://wrong.example' } })).status, 403);
+  world.modules.get('goodwell').consultations = false;
+  assert.equal((await world.call('POST', path, selected, doctorSession)).status, 403);
+  world.modules.get('goodwell').consultations = true;
+  world.doctors.get('goodwell')[0].staffSub = 'doctor-sub-2';
+  assert.equal((await world.call('POST', detailPath,
+    { ...selected, historyId: item.historyId }, doctorSession)).status, 403);
+  assert.equal((await world.call('POST', `${consultationBase}/read`, selected, otherDoctorSession)).status, 403);
+  assert.equal((await world.call('POST', path, selected, otherDoctorSession)).status, 403);
+  assert.equal((await world.call('POST', detailPath,
+    { ...selected, historyId: item.historyId }, otherDoctorSession)).status, 403);
+  world.doctors.get('goodwell')[0].staffSub = 'doctor-sub-1';
+  world.sessions.get(createHash('sha256').update(DOCTOR_COOKIE).digest('hex')).expiresAt =
+    Math.floor(NOW.getTime() / 1000);
+  assert.equal((await world.call('POST', path, selected, doctorSession)).status, 401);
+});
+
+test('history pagination is bounded, ordered by visit time, and binds cursors to the selected visit', async () => {
+  const world = setup();
+  const patientId = (await world.call('POST', `${ROOT}/goodwell/patients`, patient)).body.patient.id;
+  const selected = await bookFor(world, patientId, 'd1', '2026-10-10T18:00:00+05:30');
+  for (let slot = 0; slot < 16; slot += 1) {
+    const minute = 9 * 60 + 30 + slot * 30;
+    const time = `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`;
+    const visit = await bookFor(world, patientId, 'd1', `2026-10-10T${time}:00+05:30`);
+    await finalizeFor(world, visit, doctorSession);
+  }
+  const path = `${consultationBase}/history/list`;
+  const first = await world.call('POST', path, selected, doctorSession);
+  assert.equal(first.status, 200);
+  assert.equal(first.body.items.length, 10);
+  assert.equal(typeof first.body.nextCursor, 'string');
+  const second = await world.call('POST', path, { ...selected, cursor: first.body.nextCursor }, doctorSession);
+  assert.equal(second.status, 200);
+  assert.equal(second.body.items.length, 6);
+  assert.equal(second.body.nextCursor, null);
+  const ids = [...first.body.items, ...second.body.items].map((row) => row.historyId);
+  assert.equal(new Set(ids).size, 16);
+  assert.deepEqual(ids, [...ids].sort().reverse());
+  assert.equal((await world.call('POST', path,
+    { ...selected, cursor: `${first.body.nextCursor}x` }, doctorSession)).status, 400);
+  const alternate = await bookFor(world, patientId, 'd1', '2026-10-11T18:00:00+05:30');
+  assert.equal((await world.call('POST', path,
+    { ...alternate, cursor: first.body.nextCursor }, doctorSession)).status, 400);
+  assert.equal((await world.call('POST', path, { ...selected, cursor: 'forged' }, doctorSession)).status, 400);
+  assert.equal((await world.call('POST', path, { ...selected, patientId }, doctorSession)).status, 400);
+});
+
+test('legacy finalized encounters without a history pointer need backfill and are not guessed by a scan', async () => {
+  const world = setup();
+  const patientId = (await world.call('POST', `${ROOT}/goodwell/patients`, patient)).body.patient.id;
+  const prior = await bookFor(world, patientId, 'd2', '2026-10-10T09:30:00+05:30');
+  const selected = await bookFor(world, patientId, 'd1', '2026-10-10T10:00:00+05:30');
+  await finalizeFor(world, prior, otherDoctorSession);
+  const [pointerKey, pointer] = [...world.history.entries()][0];
+  world.history.delete(pointerKey);
+  const listed = await world.call('POST', `${consultationBase}/history/list`, selected, doctorSession);
+  assert.deepEqual(listed.body.items, []);
+  assert.equal(listed.body.coverage, 'indexed_finalizations_only');
+  assert.equal((await world.call('POST', `${consultationBase}/history/detail`,
+    { ...selected, historyId: pointer.historyId }, doctorSession)).status, 404);
+});
+
+test('a corrupt history pointer cannot expose draft or another patient’s canonical encounter', async () => {
+  const world = setup();
+  const p1 = (await world.call('POST', `${ROOT}/goodwell/patients`, patient)).body.patient.id;
+  const p2 = (await world.call('POST', `${ROOT}/goodwell/patients`,
+    { ...patient, fullName: 'Other Fictional Patient', phone: '+91 98765 43212' })).body.patient.id;
+  const old = await bookFor(world, p2, 'd2', '2026-10-10T09:30:00+05:30');
+  const selected = await bookFor(world, p1, 'd1', '2026-10-10T10:00:00+05:30');
+  const draft = await world.call('POST', `${consultationBase}/draft`,
+    { ...old, expectedRevision: 0, note, medications }, otherDoctorSession);
+  assert.equal(draft.status, 200);
+  const historicalAppointment = world.appointments.get('goodwell').find((row) => row.id === old.appointmentId);
+  const historyId = historyIdFor(historicalAppointment.startUtc, old.appointmentId);
+  world.history.set(`goodwell/${p1}/${historyId}`, { historyId, clinicSlug: 'goodwell', patientId: p1,
+    appointmentId: old.appointmentId, clinicDate: old.clinicDate,
+    visitAt: historicalAppointment.startAt, visitUtc: historicalAppointment.startUtc,
+    status: 'finalized', finalizedAt: NOW.toISOString(), doctor: { id: 'd2', displayName: 'Dr Two' } });
+  assert.equal((await world.call('POST', `${consultationBase}/history/list`, selected, doctorSession)).status, 503);
+  assert.equal((await world.call('POST', `${consultationBase}/history/detail`,
+    { ...selected, historyId }, doctorSession)).status, 404);
 });
