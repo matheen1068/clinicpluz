@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { hashPassword } from './security.ts';
 
-export type ClinicRole = 'clinic_admin' | 'doctor' | 'receptionist' | 'nurse' | 'lab_tech' | 'billing';
+export type ClinicRole = 'clinic_admin' | 'doctor' | 'receptionist' | 'nurse' | 'lab_tech' | 'billing' | 'pharmacist';
 
 export interface Clinic {
   id: string;
@@ -40,7 +40,7 @@ export interface AuthenticatedSession {
   active: number;
 }
 
-export const ROLES = new Set<ClinicRole>(['clinic_admin', 'doctor', 'receptionist', 'nurse', 'lab_tech', 'billing']);
+export const ROLES = new Set<ClinicRole>(['clinic_admin', 'doctor', 'receptionist', 'nurse', 'lab_tech', 'billing', 'pharmacist']);
 const RESERVED_SLUGS = new Set(['admin', 'api', 'app', 'control', 'controlpanel', 'staging', 'www']);
 
 export class AuthStore {

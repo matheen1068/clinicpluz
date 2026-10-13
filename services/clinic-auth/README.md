@@ -22,7 +22,7 @@ printf '%s\n' "$CP_LOCAL_PASSWORD" | CLINIC_AUTH_LOCAL_ONLY=1 pnpm seed staff go
 unset CP_LOCAL_PASSWORD
 ```
 
-Repeat for `blesswell` with a different username and password. Staff roles are `clinic_admin`, `doctor`, `receptionist`, `nurse`, `lab_tech`, or `billing`. No default clinic, staff account, or password is shipped. The SQLite file is stored at `data/local-auth.sqlite` by default; its database/WAL/SHM files are ignored by Git. Use `CLINIC_AUTH_DB_PATH` to choose another local path.
+Repeat for `blesswell` with a different username and password. Staff roles are `clinic_admin`, `doctor`, `receptionist`, `nurse`, `lab_tech`, `billing`, or `pharmacist`. No default clinic, staff account, or password is shipped. The SQLite file is stored at `data/local-auth.sqlite` by default; its database/WAL/SHM files are ignored by Git. Use `CLINIC_AUTH_DB_PATH` to choose another local path.
 
 Start the service:
 

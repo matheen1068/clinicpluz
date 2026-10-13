@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  createAppointment, getAppointments, getDoctors, pilotDateToday, pilotSlotToIso,
+  createAppointment, getAppointments, getDoctors, pilotDateToday, pilotSlotHasEnded, pilotSlotToIso,
   registerPatient, searchPatients, WorkflowApiError,
 } from './workflowApi.ts';
 
@@ -97,4 +97,11 @@ test('the provisional 30-minute schedule uses Asia/Kolkata, independent of devic
   assert.equal(pilotSlotToIso('2026-10-10', '18:30'), null);
   assert.equal(pilotSlotToIso('2026-02-30', '09:30'), null);
   assert.equal(pilotDateToday(new Date('2026-10-09T20:00:00Z')), '2026-10-10');
+});
+
+test('a running slot remains bookable until its 30-minute window ends', () => {
+  const startAt = pilotSlotToIso('2026-10-12', '10:30');
+  assert.ok(startAt);
+  assert.equal(pilotSlotHasEnded(startAt, Date.parse('2026-10-12T05:29:59Z')), false);
+  assert.equal(pilotSlotHasEnded(startAt, Date.parse('2026-10-12T05:30:00Z')), true);
 });

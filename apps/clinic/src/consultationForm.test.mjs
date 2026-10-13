@@ -29,6 +29,9 @@ test('finalization requires doctor-entered assessment, plan, and complete medici
   const medicine = { ...emptyMedication(), name: 'Synthetic medicine', dose: '1 tablet', route: 'oral',
     frequency: 'once daily', duration: '3 days', instructions: 'Synthetic instruction' };
   assert.equal(completeForFinalize(note, [medicine]), true);
+  assert.equal(completeForFinalize(note, [{ ...medicine, frequency: '', timing: { timesOfDay: ['morning', 'night'], mealRelation: 'after' } }]), true);
+  assert.equal(completeForFinalize(note, [{ ...medicine, timing: { timesOfDay: ['morning'], mealRelation: 'before' } }]), false);
+  assert.equal(completeForFinalize(note, [{ ...medicine, frequency: '', timing: null }]), false);
   assert.equal(completeForFinalize(note, [{ ...medicine, dose: '' }]), false);
 });
 

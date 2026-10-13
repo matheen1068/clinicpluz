@@ -34,6 +34,12 @@ export interface ConsultationNote {
   assessment: string;
   plan: string;
 }
+export type MedicineTimeOfDay = 'morning' | 'afternoon' | 'night';
+export type MealRelation = 'before' | 'after' | 'with' | 'unspecified';
+export interface MedicationTiming {
+  timesOfDay: MedicineTimeOfDay[];
+  mealRelation: MealRelation;
+}
 export interface Medication {
   name: string;
   strength: string;
@@ -42,6 +48,7 @@ export interface Medication {
   frequency: string;
   duration: string;
   instructions: string;
+  timing: MedicationTiming | null;
 }
 export interface MedicineCatalogItem { id: string; name: string; strength: string; favorite: boolean }
 export interface PersonIdentity { id: string; fullName: string; ageYears: number; sex: string }
@@ -128,9 +135,23 @@ function parseNote(value: unknown): ConsultationNote {
   if (!stringFields(value, NOTE_FIELDS)) throw new ConsultationApiError(null, 'Invalid consultation note response');
   return value as unknown as ConsultationNote;
 }
-function parseMedication(value: unknown): Medication {
+export function parseMedication(value: unknown): Medication {
   if (!stringFields(value, MEDICATION_FIELDS)) throw new ConsultationApiError(null, 'Invalid medication response');
-  return value as unknown as Medication;
+  const fields = {
+    name: value.name, strength: value.strength, dose: value.dose, route: value.route,
+    frequency: value.frequency, duration: value.duration, instructions: value.instructions,
+  };
+  const timing = value.timing;
+  if (timing === null || timing === undefined) return { ...fields, timing: null };
+  const choices = ['morning', 'afternoon', 'night'];
+  if (!isRecord(timing) || !Array.isArray(timing.timesOfDay) || timing.timesOfDay.length < 1 ||
+      timing.timesOfDay.length > 3 || !timing.timesOfDay.every((time) => choices.includes(time)) ||
+      new Set(timing.timesOfDay).size !== timing.timesOfDay.length ||
+      !['before', 'after', 'with', 'unspecified'].includes(timing.mealRelation as string)) {
+    throw new ConsultationApiError(null, 'Invalid medication timing response');
+  }
+  return { ...fields,
+    timing: { timesOfDay: timing.timesOfDay as MedicineTimeOfDay[], mealRelation: timing.mealRelation as MealRelation } };
 }
 function parsePatient(value: unknown): PersonIdentity {
   if (!isRecord(value) || !nonempty(value.id) || !nonempty(value.fullName) ||
@@ -160,7 +181,7 @@ function parseVitals(value: unknown): Vitals | null {
   }
   return value as unknown as Vitals;
 }
-function parsePrintable(value: unknown): PrintablePrescription {
+export function parsePrintablePrescription(value: unknown): PrintablePrescription {
   if (!isRecord(value) || !validDate(value.appointmentDate) || !validTime(value.finalizedAt) ||
       !Array.isArray(value.medications) || value.medications.length === 0) {
     throw new ConsultationApiError(null, 'Invalid prescription response');
@@ -182,7 +203,7 @@ function parseEncounter(value: unknown, slug: string, appointmentId: string, cli
   const note = value.note === undefined ? undefined : parseNote(value.note);
   const medications = value.medications === undefined ? undefined : Array.isArray(value.medications) ? value.medications.map(parseMedication) : null;
   if (medications === null) throw new ConsultationApiError(null, 'Invalid medications response');
-  const printable = printValue === undefined ? undefined : parsePrintable(printValue);
+  const printable = printValue === undefined ? undefined : parsePrintablePrescription(printValue);
   const patient = parsePatient(value.patient);
   const doctor = parseDoctor(value.doctor);
   if (printable && (printable.clinic.slug !== clinic.slug || printable.patient.id !== patient.id ||
@@ -191,7 +212,8 @@ function parseEncounter(value: unknown, slug: string, appointmentId: string, cli
       printable.patient.fullName !== patient.fullName || printable.patient.ageYears !== patient.ageYears ||
       printable.patient.sex !== patient.sex || printable.doctor.displayName !== doctor.displayName ||
       !medications || printable.medications.length !== medications.length ||
-      printable.medications.some((item, index) => MEDICATION_FIELDS.some((field) => item[field] !== medications[index][field])))) {
+      printable.medications.some((item, index) => MEDICATION_FIELDS.some((field) => item[field] !== medications[index][field]) ||
+        JSON.stringify(item.timing) !== JSON.stringify(medications[index].timing)))) {
     throw new ConsultationApiError(null, 'Prescription identity mismatch');
   }
   if ((value.status === 'draft' && (value.finalizedAt !== null || printable)) ||

@@ -15,7 +15,7 @@ type Item = Record<string, AttributeValue>;
 const s = (value: string): AttributeValue => ({ S: value });
 const n = (value: number): AttributeValue => ({ N: String(value) });
 const b = (value: boolean): AttributeValue => ({ BOOL: value });
-const roles = new Set<Role>(['clinic_admin', 'doctor', 'receptionist', 'nurse', 'lab_tech', 'billing']);
+const roles = new Set<Role>(['clinic_admin', 'doctor', 'receptionist', 'nurse', 'lab_tech', 'billing', 'pharmacist']);
 const sexes = new Set<Sex>(['female', 'male', 'other', 'undisclosed']);
 const sources = new Set<Source>(['phone', 'walk_in']);
 const statuses = new Set<AppointmentStatus>(['booked', 'checked_in']);
@@ -376,5 +376,68 @@ export class DynamoWorkflowStore implements WorkflowStore {
       }
       throw error;
     }
+  }
+  async claimPrescriptionEmail(slug: string, appointmentId: string, revision: number,
+    recipientHash: string, actorSub: string, at: string,
+    context: { clinicDate: string; patientId: string; doctorId: string; storedEmail: string }):
+    Promise<'claimed' | 'pending' | 'accepted' | 'unknown' | 'recipient_changed' | 'stored_email_changed'> {
+    const pk = `CLINIC#${slug}#PRESCRIPTION_EMAIL`;
+    const sk = `APPOINTMENT#${appointmentId}#REV#${revision}`;
+    try {
+      await this.client.send(new TransactWriteItemsCommand({ TransactItems: [
+        { ConditionCheck: { TableName: this.table,
+          Key: { pk: s(`CLINIC#${slug}#PATIENTS`), sk: s(`PATIENT#${context.patientId}`) },
+          ConditionExpression: 'attribute_exists(pk) AND id = :patient AND #email = :email',
+          ExpressionAttributeNames: { '#email': 'email' },
+          ExpressionAttributeValues: { ':patient': s(context.patientId), ':email': s(context.storedEmail) },
+        } },
+        { ConditionCheck: { TableName: this.table,
+          Key: { pk: s(`CLINIC#${slug}#ENCOUNTERS#${context.clinicDate}`), sk: s(`APPOINTMENT#${appointmentId}`) },
+          ConditionExpression: 'attribute_exists(pk) AND appointmentId = :appointment AND patientId = :patient AND doctorId = :doctor AND #status = :finalized AND #revision = :revision',
+          ExpressionAttributeNames: { '#status': 'status', '#revision': 'revision' },
+          ExpressionAttributeValues: { ':appointment': s(appointmentId), ':patient': s(context.patientId),
+            ':doctor': s(context.doctorId), ':finalized': s('finalized'), ':revision': n(revision) },
+        } },
+        { Put: { TableName: this.table, Item: { pk: s(pk), sk: s(sk),
+          appointmentId: s(appointmentId), revision: n(revision), recipientHash: s(recipientHash),
+          status: s('pending'), claimedAt: s(at), actorSub: s(actorSub),
+        }, ConditionExpression: 'attribute_not_exists(pk)' } },
+        { Put: { TableName: this.table, Item: {
+          pk: s(`CLINIC#${slug}#AUDIT`), sk: s(`${at}#${randomUUID()}`),
+          action: s('prescription.email.requested'), actorSub: s(actorSub), targetId: s(appointmentId),
+          at: s(at), revision: n(revision),
+        }, ConditionExpression: 'attribute_not_exists(pk)' } },
+      ] }));
+      return 'claimed';
+    } catch (error) {
+      if (!(error instanceof Error) || error.name !== 'TransactionCanceledException') throw error;
+      const reasons = (error as Error & { CancellationReasons?: Array<{ Code?: string }> }).CancellationReasons;
+      if (reasons?.[0]?.Code === 'ConditionalCheckFailed') return 'stored_email_changed';
+      const existing = await this.get(pk, sk);
+      if (!existing) throw error;
+      if (string(existing, 'recipientHash') !== recipientHash) return 'recipient_changed';
+      const status = string(existing, 'status');
+      if (status !== 'pending' && status !== 'accepted' && status !== 'unknown') throw error;
+      return status;
+    }
+  }
+  async markPrescriptionEmail(slug: string, appointmentId: string, revision: number,
+    status: 'accepted' | 'unknown', at: string, messageId?: string): Promise<void> {
+    const values: Item = { ':pending': s('pending'), ':status': s(status), ':at': s(at) };
+    if (messageId) values[':messageId'] = s(messageId);
+    await this.client.send(new TransactWriteItemsCommand({ TransactItems: [
+      { Update: { TableName: this.table,
+        Key: { pk: s(`CLINIC#${slug}#PRESCRIPTION_EMAIL`),
+          sk: s(`APPOINTMENT#${appointmentId}#REV#${revision}`) },
+        UpdateExpression: `SET #status = :status, updatedAt = :at${messageId ? ', messageId = :messageId' : ''}`,
+        ConditionExpression: '#status = :pending', ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: values,
+      } },
+      { Put: { TableName: this.table, Item: {
+        pk: s(`CLINIC#${slug}#AUDIT`), sk: s(`${at}#${randomUUID()}`),
+        action: s(status === 'accepted' ? 'prescription.email.accepted' : 'prescription.email.unknown'),
+        actorSub: s('system'), targetId: s(appointmentId), at: s(at), revision: n(revision),
+      }, ConditionExpression: 'attribute_not_exists(pk)' } },
+    ] }));
   }
 }

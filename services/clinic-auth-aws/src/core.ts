@@ -7,8 +7,8 @@ const RESERVED = new Set(['admin', 'api', 'app', 'control', 'controlpanel', 'sta
 const PRE_COOKIE = '__Host-cpz_pre';
 const SESSION_COOKIE = '__Host-cpz_session';
 
-export type Role = 'clinic_admin' | 'doctor' | 'receptionist' | 'nurse' | 'lab_tech' | 'billing';
-export const ROLES = new Set<Role>(['clinic_admin', 'doctor', 'receptionist', 'nurse', 'lab_tech', 'billing']);
+export type Role = 'clinic_admin' | 'doctor' | 'receptionist' | 'nurse' | 'lab_tech' | 'billing' | 'pharmacist';
+export const ROLES = new Set<Role>(['clinic_admin', 'doctor', 'receptionist', 'nurse', 'lab_tech', 'billing', 'pharmacist']);
 
 export interface Clinic { slug: string; displayName: string; active: boolean }
 export interface Membership {

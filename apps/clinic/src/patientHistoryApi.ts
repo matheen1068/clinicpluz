@@ -1,4 +1,4 @@
-import { ConsultationApiError, type ConsultationNote, type Medication, type Vitals } from './consultationApi.ts';
+import { ConsultationApiError, parseMedication, type ConsultationNote, type Medication, type Vitals } from './consultationApi.ts';
 import { validClinicSlug } from './tenant.ts';
 
 export interface HistoryContext {
@@ -100,11 +100,7 @@ function parseNote(value: unknown): ConsultationNote {
 }
 function parseMedications(value: unknown): Medication[] {
   if (!Array.isArray(value) || value.length > 20) throw new ConsultationApiError(null, 'Invalid history medicines');
-  return value.map((item: unknown) => {
-    if (!isRecord(item) || !['name', 'strength', 'dose', 'route', 'frequency', 'duration', 'instructions']
-      .every((field) => typeof item[field] === 'string')) throw new ConsultationApiError(null, 'Invalid history medicine');
-    return item as unknown as Medication;
-  });
+  return value.map(parseMedication);
 }
 
 export async function listPatientHistory(context: HistoryContext, csrfToken: string, cursor?: string, signal?: AbortSignal): Promise<HistoryPage> {

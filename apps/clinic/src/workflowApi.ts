@@ -175,3 +175,7 @@ export function pilotSlotToIso(date: string, time: string): string | null {
   const get = (part: string) => back.find((item) => item.type === part)?.value ?? '';
   return `${get('year')}-${get('month')}-${get('day')}` === date && `${get('hour')}:${get('minute')}` === time ? local.toISOString() : null;
 }
+
+export function pilotSlotHasEnded(startAt: string, nowMs = Date.now()): boolean {
+  return Date.parse(startAt) + 30 * 60_000 <= nowMs;
+}

@@ -93,3 +93,62 @@ test('history adapter uses tenant/patient exact keys, strongly consistent bounde
   assert.deepEqual(seen[1].Key, { pk: { S: 'CLINIC#goodwell#PATIENT#patient_1#HISTORY' },
     sk: { S: rows[0].historyId } });
 });
+
+test('prescription email claim and acceptance are metadata-only tenant transactions', async () => {
+  const transactions = [];
+  const client = { async send(command) { transactions.push(command.input); return {}; } };
+  const store = new DynamoWorkflowStore(client, 'clinical-staging');
+  const context = { clinicDate: '2026-10-10', patientId: 'patient_1', doctorId: 'doctor_1',
+    storedEmail: 'patient@example.test' };
+  assert.equal(await store.claimPrescriptionEmail('goodwell', 'appt_1', 3,
+    'recipient-sha256', 'reception-sub', '2026-10-10T04:30:00.000Z', context), 'claimed');
+  const claim = transactions[0];
+  assert.equal(claim.TransactItems[0].ConditionCheck.Key.pk.S, 'CLINIC#goodwell#PATIENTS');
+  assert.equal(claim.TransactItems[0].ConditionCheck.ExpressionAttributeValues[':email'].S, context.storedEmail);
+  assert.equal(claim.TransactItems[1].ConditionCheck.Key.pk.S, 'CLINIC#goodwell#ENCOUNTERS#2026-10-10');
+  assert.equal(claim.TransactItems[1].ConditionCheck.ExpressionAttributeValues[':revision'].N, '3');
+  assert.equal(claim.TransactItems[2].Put.Item.pk.S, 'CLINIC#goodwell#PRESCRIPTION_EMAIL');
+  assert.equal(claim.TransactItems[2].Put.Item.sk.S, 'APPOINTMENT#appt_1#REV#3');
+  assert.equal(claim.TransactItems[2].Put.ConditionExpression, 'attribute_not_exists(pk)');
+  assert.equal(claim.TransactItems[3].Put.Item.action.S, 'prescription.email.requested');
+  await store.markPrescriptionEmail('goodwell', 'appt_1', 3,
+    'accepted', '2026-10-10T04:30:01.000Z', 'ses-message-1');
+  const accepted = transactions[1].TransactItems;
+  assert.equal(accepted[0].Update.ConditionExpression, '#status = :pending');
+  assert.equal(accepted[0].Update.Key.pk.S, 'CLINIC#goodwell#PRESCRIPTION_EMAIL');
+  assert.equal(accepted[1].Put.Item.action.S, 'prescription.email.accepted');
+  assert.equal(JSON.stringify([claim.TransactItems[2].Put.Item, claim.TransactItems[3].Put.Item,
+    ...accepted.map((item) => item.Update ?? item.Put?.Item)]).includes(context.storedEmail), false);
+});
+
+test('existing email claim is read strongly and a changed recipient fails closed', async () => {
+  const client = { async send(command) {
+    if (command.input.TransactItems) {
+      const error = new Error('conditional conflict'); error.name = 'TransactionCanceledException'; throw error;
+    }
+    assert.equal(command.input.ConsistentRead, true);
+    return { Item: { recipientHash: { S: 'original-hash' }, status: { S: 'accepted' } } };
+  } };
+  const store = new DynamoWorkflowStore(client, 'clinical-staging');
+  const context = { clinicDate: '2026-10-10', patientId: 'patient_1', doctorId: 'doctor_1',
+    storedEmail: 'patient@example.test' };
+  assert.equal(await store.claimPrescriptionEmail('goodwell', 'appt_1', 3,
+    'original-hash', 'reception-sub', '2026-10-10T04:30:00.000Z', context), 'accepted');
+  assert.equal(await store.claimPrescriptionEmail('goodwell', 'appt_1', 3,
+    'changed-hash', 'reception-sub', '2026-10-10T04:30:00.000Z', context), 'recipient_changed');
+});
+
+test('changed stored email aborts the atomic claim before SES', async () => {
+  const client = { async send(command) {
+    assert.ok(command.input.TransactItems);
+    const error = new Error('patient condition failed'); error.name = 'TransactionCanceledException';
+    error.CancellationReasons = [{ Code: 'ConditionalCheckFailed' }, { Code: 'None' },
+      { Code: 'None' }, { Code: 'None' }];
+    throw error;
+  } };
+  const store = new DynamoWorkflowStore(client, 'clinical-staging');
+  assert.equal(await store.claimPrescriptionEmail('goodwell', 'appt_1', 3,
+    'recipient-sha256', 'reception-sub', '2026-10-10T04:30:00.000Z',
+    { clinicDate: '2026-10-10', patientId: 'patient_1', doctorId: 'doctor_1',
+      storedEmail: 'patient@example.test' }), 'stored_email_changed');
+});

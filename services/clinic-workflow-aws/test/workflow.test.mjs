@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { createWorkflowApp } from '../src/core.ts';
 import { fromHttpApiEvent } from '../src/http-api.ts';
 import { historyIdFor } from '../src/history.ts';
+import { PDFDocument, decodePDFRawStream } from 'pdf-lib';
 
 const ORIGIN = 'https://example123.cloudfront.net';
 const EDGE_KEY = 'e'.repeat(48);
@@ -11,6 +12,7 @@ const COOKIE = 'c'.repeat(43);
 const DOCTOR_COOKIE = 'd'.repeat(43);
 const OTHER_DOCTOR_COOKIE = 'o'.repeat(43);
 const NURSE_COOKIE = 'n'.repeat(43);
+const PHARMACIST_COOKIE = 'p'.repeat(43);
 const CSRF = 'csrf-token-for-synthetic-staging';
 const NOW = new Date('2026-10-09T10:00:00Z');
 const ROOT = '/api/workflow/clinics';
@@ -32,7 +34,7 @@ test('clinic medicine search is doctor-only, tenant-scoped, and never returns in
   assert.equal((await world.call('POST', route, { query: 'tablet' }, doctor)).status, 403);
 });
 
-function setup() {
+function setup(options = {}) {
   const sessions = new Map([[createHash('sha256').update(COOKIE).digest('hex'), {
     clinicSlug: 'goodwell', username: 'reception', sub: 'staff-sub-1', csrfToken: CSRF,
     expiresAt: Math.floor(NOW.getTime() / 1000) + 3600,
@@ -44,6 +46,9 @@ function setup() {
     expiresAt: Math.floor(NOW.getTime() / 1000) + 3600,
   }], [createHash('sha256').update(NURSE_COOKIE).digest('hex'), {
     clinicSlug: 'goodwell', username: 'nurse', sub: 'nurse-sub-1', csrfToken: CSRF,
+    expiresAt: Math.floor(NOW.getTime() / 1000) + 3600,
+  }], [createHash('sha256').update(PHARMACIST_COOKIE).digest('hex'), {
+    clinicSlug: 'goodwell', username: 'pharmacist', sub: 'pharmacist-sub-1', csrfToken: CSRF,
     expiresAt: Math.floor(NOW.getTime() / 1000) + 3600,
   }]]);
   const clinics = new Map([
@@ -59,6 +64,8 @@ function setup() {
       sub: 'doctor-sub-2', displayName: 'Dr Two', role: 'doctor', active: true }],
     ['goodwell/nurse', { clinicSlug: 'goodwell', username: 'nurse', cognitoUsername: 'internal-nurse',
       sub: 'nurse-sub-1', displayName: 'Demo Nurse', role: 'nurse', active: true }],
+    ['goodwell/pharmacist', { clinicSlug: 'goodwell', username: 'pharmacist', cognitoUsername: 'internal-pharmacist',
+      sub: 'pharmacist-sub-1', displayName: 'Demo Pharmacist', role: 'pharmacist', active: true }],
   ]);
   const modules = new Map([
     ['goodwell', { clinicSlug: 'goodwell', patient_intake: true, appointments: true, consultations: true }],
@@ -93,6 +100,7 @@ function setup() {
   const appointments = new Map();
   const encounters = new Map();
   const history = new Map();
+  const deliveries = new Map();
   const occupied = new Set();
   const audit = [];
   const store = {
@@ -159,8 +167,32 @@ function setup() {
       audit.push({ action, slug, actorSub, revision: encounter.revision });
       return true;
     },
+    async claimPrescriptionEmail(slug, appointmentId, revision, recipientHash, actorSub, at, context) {
+      options.beforeEmailClaim?.();
+      if (patients.get(slug)?.get(context.patientId)?.email !== context.storedEmail) return 'stored_email_changed';
+      const current = encounters.get(`${slug}/${context.clinicDate}/${appointmentId}`);
+      if (current?.status !== 'finalized' || current.revision !== revision ||
+          current.patientId !== context.patientId || current.doctorId !== context.doctorId) {
+        throw new Error('Finalized prescription changed before claim');
+      }
+      const key = `${slug}/${appointmentId}/${revision}`;
+      const existing = deliveries.get(key);
+      if (existing) return existing.recipientHash === recipientHash ? existing.status : 'recipient_changed';
+      deliveries.set(key, { recipientHash, status: 'pending' });
+      audit.push({ action: 'prescription.email.requested', slug, appointmentId, actorSub, at, revision });
+      return 'claimed';
+    },
+    async markPrescriptionEmail(slug, appointmentId, revision, status, at, messageId) {
+      const key = `${slug}/${appointmentId}/${revision}`;
+      const delivery = deliveries.get(key);
+      if (delivery?.status !== 'pending') throw new Error('Delivery claim changed');
+      delivery.status = status;
+      delivery.messageId = messageId;
+      audit.push({ action: `prescription.email.${status}`, slug, appointmentId, at, revision });
+    },
   };
-  const app = createWorkflowApp(auth, identity, store, { publicOrigin: ORIGIN, edgeKey: EDGE_KEY, now: () => NOW });
+  const app = createWorkflowApp(auth, identity, store, { publicOrigin: ORIGIN, edgeKey: EDGE_KEY,
+    now: () => NOW, ...(options.prescriptionEmail ? { prescriptionEmail: options.prescriptionEmail } : {}) });
   async function call(method, path, payload, options = {}) {
     const response = await app.handle({
       method, path, queryString: options.queryString ?? '',
@@ -172,7 +204,7 @@ function setup() {
     });
     return { status: response.statusCode, body: JSON.parse(response.body), headers: response.headers };
   }
-  return { call, auth, store, sessions, clinics, members, modules, schedules, doctors, medicines, patients, appointments, encounters, history,
+  return { call, auth, store, sessions, clinics, members, modules, schedules, doctors, medicines, patients, appointments, encounters, history, deliveries,
     audit, setCognitoActive: (value) => { cognitoActive = value; } };
 }
 const patient = { fullName: 'Amina Khan', phone: '+91 98765 43210', ageYears: 38, sex: 'female', email: 'amina@example.test' };
@@ -180,6 +212,7 @@ const consultationBase = `${ROOT}/goodwell/consultations`;
 const doctorSession = { cookies: [`__Host-cpz_session=${DOCTOR_COOKIE}`] };
 const otherDoctorSession = { cookies: [`__Host-cpz_session=${OTHER_DOCTOR_COOKIE}`] };
 const nurseSession = { cookies: [`__Host-cpz_session=${NURSE_COOKIE}`] };
+const pharmacistSession = { cookies: [`__Host-cpz_session=${PHARMACIST_COOKIE}`] };
 const note = { chiefComplaint: 'Synthetic complaint', history: '', exam: 'Synthetic exam',
   assessment: 'Clinician-entered assessment', plan: 'Clinician-entered plan' };
 const medications = [{ name: 'Demo Medicine', strength: '10 mg', dose: '1 tablet', route: 'oral',
@@ -664,4 +697,252 @@ test('a corrupt history pointer cannot expose draft or another patient’s canon
   assert.equal((await world.call('POST', `${consultationBase}/history/list`, selected, doctorSession)).status, 503);
   assert.equal((await world.call('POST', `${consultationBase}/history/detail`,
     { ...selected, historyId }, doctorSession)).status, 404);
+});
+
+test('doctor-entered structured timing can replace frequency while legacy records display timing null', async () => {
+  const world = setup();
+  const patientId = (await world.call('POST', `${ROOT}/goodwell/patients`, patient)).body.patient.id;
+  const selected = await bookFor(world, patientId, 'd1', '2026-10-10T10:00:00+05:30');
+  const timed = { ...medications[0], frequency: '',
+    timing: { timesOfDay: ['morning', 'night'] } };
+  for (const badTiming of [
+    { timesOfDay: [] }, { timesOfDay: ['morning', 'morning'] },
+    { timesOfDay: ['midnight'] }, { timesOfDay: ['night'], mealRelation: 'unknown' },
+    { timesOfDay: ['night'], mealRelation: null },
+    { timesOfDay: ['night'], mealRelation: 'after', extra: true },
+  ]) {
+    assert.equal((await world.call('POST', `${consultationBase}/draft`,
+      { ...selected, expectedRevision: 0, note, medications: [{ ...timed, timing: badTiming }] }, doctorSession)).status, 400);
+  }
+  const draft = await world.call('POST', `${consultationBase}/draft`,
+    { ...selected, expectedRevision: 0, note, medications: [timed] }, doctorSession);
+  assert.equal(draft.status, 200);
+  assert.deepEqual(draft.body.encounter.medications[0].timing,
+    { timesOfDay: ['morning', 'night'], mealRelation: 'unspecified' });
+  assert.equal(draft.body.encounter.medications[0].frequency, '');
+  assert.equal((await world.call('POST', `${consultationBase}/finalize`,
+    { ...selected, expectedRevision: 1 }, doctorSession)).status, 200);
+
+  const old = await bookFor(world, patientId, 'd1', '2026-10-10T11:00:00+05:30');
+  assert.equal((await world.call('POST', `${consultationBase}/draft`,
+    { ...old, expectedRevision: 0, note, medications }, doctorSession)).status, 200);
+  const oldStored = world.encounters.get(`goodwell/${old.clinicDate}/${old.appointmentId}`);
+  delete oldStored.medications[0].timing;
+  const oldRead = await world.call('POST', `${consultationBase}/read`, old, doctorSession);
+  assert.equal(oldRead.body.encounter.medications[0].timing, null);
+  assert.equal((await world.call('POST', `${consultationBase}/finalize`,
+    { ...old, expectedRevision: 1 }, doctorSession)).status, 200);
+
+  const conflicting = await bookFor(world, patientId, 'd1', '2026-10-10T12:00:00+05:30');
+  assert.equal((await world.call('POST', `${consultationBase}/draft`,
+    { ...conflicting, expectedRevision: 0, note,
+      medications: [{ ...medications[0], timing: { timesOfDay: ['morning'], mealRelation: 'with' } }] }, doctorSession)).status, 200);
+  assert.equal((await world.call('POST', `${consultationBase}/finalize`,
+    { ...conflicting, expectedRevision: 1 }, doctorSession)).status, 400);
+});
+
+test('reception and pharmacy can see only finalized prescription handoff, never notes, vitals, or drafts', async () => {
+  const world = setup();
+  const patientId = (await world.call('POST', `${ROOT}/goodwell/patients`, patient)).body.patient.id;
+  const withRx = await bookFor(world, patientId, 'd1', '2026-10-10T10:00:00+05:30');
+  const draftOnly = await bookFor(world, patientId, 'd1', '2026-10-10T11:00:00+05:30');
+  const withoutRx = await bookFor(world, patientId, 'd1', '2026-10-10T12:00:00+05:30');
+  await finalizeFor(world, withRx);
+  assert.equal((await world.call('POST', `${consultationBase}/draft`,
+    { ...draftOnly, expectedRevision: 0, note, medications }, doctorSession)).status, 200);
+  assert.equal((await world.call('POST', `${consultationBase}/draft`,
+    { ...withoutRx, expectedRevision: 0, note, medications: [] }, doctorSession)).status, 200);
+  assert.equal((await world.call('POST', `${consultationBase}/finalize`,
+    { ...withoutRx, expectedRevision: 1 }, doctorSession)).status, 200);
+  const queuePath = `${consultationBase}/prescriptions`;
+  const detailPath = `${queuePath}/read`;
+  for (const staff of [{}, pharmacistSession]) {
+    const queue = await world.call('GET', queuePath, undefined, { ...staff, queryString: 'date=2026-10-10' });
+    assert.equal(queue.status, 200);
+    assert.deepEqual(queue.body.items.map((item) => item.appointmentId), [withRx.appointmentId]);
+    assert.deepEqual(Object.keys(queue.body.items[0]).sort(),
+      ['appointmentId', 'clinicDate', 'doctorId', 'doctorName', 'finalizedAt', 'patientId', 'patientName', 'startAt'].sort());
+    const detail = await world.call('POST', detailPath, withRx, staff);
+    assert.equal(detail.status, 200);
+    assert.deepEqual(Object.keys(detail.body).sort(), ['printablePrescription', 'status']);
+    assert.equal(detail.body.status, 'finalized');
+    assert.equal(detail.body.printablePrescription.medications[0].timing, null);
+    assert.equal(detail.body.printablePrescription.patient.phone, undefined);
+    assert.equal(detail.body.printablePrescription.patient.email, undefined);
+    assert.equal(detail.body.encounter, undefined);
+    assert.equal((await world.call('POST', detailPath, draftOnly, staff)).status, 404);
+    assert.equal((await world.call('POST', detailPath, withoutRx, staff)).status, 404);
+    assert.equal((await world.call('POST', `${consultationBase}/read`, withRx, staff)).status, 403);
+    assert.equal((await world.call('POST', `${consultationBase}/history/list`, withRx, staff)).status, 403);
+    assert.equal((await world.call('POST', `${consultationBase}/vitals`,
+      { ...withRx, expectedRevision: 2, vitals: { observedAt: NOW.toISOString(), pulseBpm: 72 } }, staff)).status, 403);
+    assert.equal((await world.call('POST', `${consultationBase}/draft`,
+      { ...withRx, expectedRevision: 2, note, medications }, staff)).status, 403);
+  }
+  assert.equal((await world.call('GET', queuePath, undefined,
+    { ...doctorSession, queryString: 'date=2026-10-10' })).status, 403);
+  assert.equal((await world.call('POST', detailPath, withRx, nurseSession)).status, 403);
+  world.members.get('goodwell/reception').role = 'clinic_admin';
+  assert.equal((await world.call('POST', detailPath, withRx)).status, 403);
+});
+
+test('prescription handoff checks session, clinic, entitlement, CSRF and canonical record linkage', async () => {
+  const world = setup();
+  const selected = await seedAppointment(world);
+  await finalizeFor(world, selected);
+  const queuePath = `${consultationBase}/prescriptions`;
+  const detailPath = `${queuePath}/read`;
+  assert.equal((await world.call('GET', queuePath, undefined,
+    { queryString: 'date=2026-10-10', cookies: [] })).status, 401);
+  assert.equal((await world.call('GET', `${ROOT}/blesswell/consultations/prescriptions`, undefined,
+    { ...pharmacistSession, queryString: 'date=2026-10-10' })).status, 403);
+  assert.equal((await world.call('POST', `${ROOT}/blesswell/consultations/prescriptions/read`,
+    selected)).status, 403);
+  assert.equal((await world.call('GET', queuePath, undefined, { ...pharmacistSession, queryString: '' })).status, 400);
+  assert.equal((await world.call('POST', detailPath, { ...selected, patientId: 'forged' }, pharmacistSession)).status, 400);
+  assert.equal((await world.call('POST', detailPath, selected,
+    { ...pharmacistSession, headers: { 'x-csrf-token': 'wrong' } })).status, 403);
+  assert.equal((await world.call('POST', detailPath, selected,
+    { ...pharmacistSession, headers: { origin: 'https://evil.example' } })).status, 403);
+  assert.equal((await world.call('POST', detailPath, selected,
+    { ...pharmacistSession, headers: { 'x-clinicpluz-edge-key': 'wrong' } })).status, 403);
+  world.modules.get('goodwell').consultations = false;
+  assert.equal((await world.call('POST', detailPath, selected, pharmacistSession)).status, 403);
+  world.modules.get('goodwell').consultations = true;
+  const session = world.sessions.get(createHash('sha256').update(PHARMACIST_COOKIE).digest('hex'));
+  session.expiresAt = Math.floor(NOW.getTime() / 1000);
+  assert.equal((await world.call('POST', detailPath, selected, pharmacistSession)).status, 401);
+  session.expiresAt += 3600;
+  const encounter = world.encounters.get(`goodwell/${selected.clinicDate}/${selected.appointmentId}`);
+  encounter.patientId = 'other-patient';
+  assert.equal((await world.call('POST', detailPath, selected, pharmacistSession)).status, 503);
+  assert.equal((await world.call('GET', queuePath, undefined,
+    { ...pharmacistSession, queryString: 'date=2026-10-10' })).status, 503);
+});
+
+test('demo email is disabled by default and preview requires reception and a finalized prescription', async () => {
+  const world = setup();
+  const selected = await seedAppointment(world);
+  const previewPath = `${consultationBase}/prescriptions/email/preview`;
+  assert.equal((await world.call('POST', previewPath, selected)).status, 503);
+  assert.equal((await world.call('POST', previewPath, selected, pharmacistSession)).status, 403);
+  assert.equal(world.deliveries.size, 0);
+  const enabled = setup({ prescriptionEmail: { allowedRecipient: patient.email,
+    async send() { throw new Error('Should not send during preview'); } } });
+  const draft = await seedAppointment(enabled);
+  assert.equal((await enabled.call('POST', previewPath, draft)).status, 404);
+  await finalizeFor(enabled, draft);
+  const preview = await enabled.call('POST', previewPath, draft);
+  assert.equal(preview.status, 200);
+  assert.equal(preview.body.recipientEmail, patient.email);
+  assert.equal(preview.body.recipientMasked, 'a***@example.test');
+  assert.equal(preview.headers['cache-control'], 'no-store');
+  assert.equal(enabled.deliveries.size, 0);
+});
+
+test('reception sends one server-generated demo PDF only to confirmed stored patient email', async () => {
+  const sent = [];
+  const world = setup({ prescriptionEmail: { allowedRecipient: patient.email,
+    async send(to, pdf) { sent.push({ to, pdf }); return 'ses-synthetic-message-1'; } } });
+  const selected = await seedAppointment(world);
+  await finalizeFor(world, selected);
+  const path = `${consultationBase}/prescriptions/email`;
+  const previewPath = `${path}/preview`;
+  const request = { ...selected, expectedRecipientEmail: patient.email, confirmPatientEmail: true };
+  assert.equal((await world.call('POST', path, { ...request, recipient: 'attacker@example.test' })).status, 400);
+  assert.equal((await world.call('POST', path, { ...request, confirmPatientEmail: false })).status, 400);
+  assert.equal((await world.call('POST', path, { ...request, expectedRecipientEmail: 'old@example.test' })).status, 409);
+  assert.equal((await world.call('POST', path, request, pharmacistSession)).status, 403);
+  assert.equal((await world.call('POST', path, request, doctorSession)).status, 403);
+  assert.equal((await world.call('POST', path, request,
+    { headers: { 'x-csrf-token': 'wrong' } })).status, 403);
+  assert.equal((await world.call('POST', `${ROOT}/blesswell/consultations/prescriptions/email`, request)).status, 403);
+  assert.equal((await world.call('POST', previewPath, selected)).body.recipientEmail, patient.email);
+  const first = await world.call('POST', path, request);
+  assert.equal(first.status, 202);
+  assert.deepEqual(first.body, { status: 'accepted', recipientMasked: 'a***@example.test' });
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].to, patient.email);
+  assert.equal(Buffer.from(sent[0].pdf).subarray(0, 5).toString(), '%PDF-');
+  const parsed = await PDFDocument.load(sent[0].pdf);
+  assert.equal(parsed.getPageCount(), 1);
+  const content = parsed.getPage(0).node.Contents();
+  const operators = Array.from({ length: content.size() }, (_, index) =>
+    Buffer.from(decodePDFRawStream(parsed.context.lookup(content.get(index))).decode()).toString('ascii')).join('\n');
+  assert.equal(operators.includes(Buffer.from(note.assessment).toString('hex').toUpperCase()), false);
+  assert.ok(operators.includes(Buffer.from('Demo Medicine').toString('hex').toUpperCase()));
+  assert.equal((await world.call('POST', path, request)).status, 200);
+  assert.equal(sent.length, 1);
+  assert.equal(world.deliveries.size, 1);
+  assert.deepEqual(world.audit.filter((entry) => entry.action.startsWith('prescription.email.'))
+    .map((entry) => entry.action), ['prescription.email.requested', 'prescription.email.accepted']);
+  assert.equal(JSON.stringify(world.audit).includes(patient.email), false);
+  assert.equal(JSON.stringify([...world.deliveries.entries()]).includes(patient.email), false);
+});
+
+test('email confirmation is invalidated by changed stored address, missing email, and unsupported demo glyphs', async () => {
+  let sends = 0;
+  const world = setup({ prescriptionEmail: { allowedRecipient: patient.email,
+    async send() { sends += 1; return 'synthetic-message'; } } });
+  const selected = await seedAppointment(world);
+  await finalizeFor(world, selected);
+  const path = `${consultationBase}/prescriptions/email`;
+  const request = { ...selected, expectedRecipientEmail: patient.email, confirmPatientEmail: true };
+  const patientId = world.appointments.get('goodwell')[0].patientId;
+  const record = world.patients.get('goodwell').get(patientId);
+  record.email = 'changed@example.test';
+  assert.equal((await world.call('POST', path, request)).status, 409);
+  record.email = null;
+  assert.equal((await world.call('POST', `${path}/preview`, selected)).status, 409);
+  record.email = patient.email;
+  record.fullName = 'अमन Demo';
+  const unsupported = await world.call('POST', path, request);
+  assert.equal(unsupported.status, 422);
+  assert.equal(sends, 0);
+  assert.equal(world.deliveries.size, 0);
+});
+
+test('an email change between canonical read and atomic claim requires a new preview', async () => {
+  let patientRecord;
+  let sends = 0;
+  const world = setup({ prescriptionEmail: { allowedRecipient: patient.email,
+    async send() { sends += 1; return 'synthetic-message'; } },
+    beforeEmailClaim() { patientRecord.email = 'changed@example.test'; } });
+  const selected = await seedAppointment(world);
+  await finalizeFor(world, selected);
+  const patientId = world.appointments.get('goodwell')[0].patientId;
+  patientRecord = world.patients.get('goodwell').get(patientId);
+  const response = await world.call('POST', `${consultationBase}/prescriptions/email`, {
+    ...selected, expectedRecipientEmail: patient.email, confirmPatientEmail: true,
+  });
+  assert.equal(response.status, 409);
+  assert.equal(response.body.error, 'Patient email changed; review again');
+  assert.equal(sends, 0);
+  assert.equal(world.deliveries.size, 0);
+});
+
+test('concurrent and uncertain SES outcomes never send a second synthetic PDF automatically', async () => {
+  let release;
+  let started;
+  const startedPromise = new Promise((resolve) => { started = resolve; });
+  const gate = new Promise((resolve) => { release = resolve; });
+  let sends = 0;
+  const world = setup({ prescriptionEmail: { allowedRecipient: patient.email,
+    async send() { sends += 1; started(); await gate; throw new Error('Ambiguous SES timeout'); } } });
+  const selected = await seedAppointment(world);
+  await finalizeFor(world, selected);
+  const path = `${consultationBase}/prescriptions/email`;
+  const request = { ...selected, expectedRecipientEmail: patient.email, confirmPatientEmail: true };
+  const firstPromise = world.call('POST', path, request);
+  await startedPromise;
+  const duplicate = await world.call('POST', path, request);
+  assert.equal(duplicate.status, 202);
+  assert.equal(duplicate.body.status, 'pending');
+  release();
+  const first = await firstPromise;
+  assert.equal(first.status, 503);
+  const retry = await world.call('POST', path, request);
+  assert.equal(retry.status, 409);
+  assert.equal(retry.body.status, 'unknown');
+  assert.equal(sends, 1);
 });

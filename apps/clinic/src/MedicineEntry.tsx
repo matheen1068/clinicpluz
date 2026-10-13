@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
-import { ConsultationApiError, searchMedicines, type MedicineCatalogItem, type Medication } from './consultationApi';
+import { ConsultationApiError, searchMedicines, type MedicineCatalogItem, type Medication, type MedicineTimeOfDay } from './consultationApi';
 
 const DIRECTION_FIELDS = [
   { key: 'dose', label: 'Dose' },
   { key: 'route', label: 'Route' },
-  { key: 'frequency', label: 'Frequency' },
   { key: 'duration', label: 'Duration' },
   { key: 'instructions', label: 'Instructions' },
 ] as const;
+const TIMES: { key: MedicineTimeOfDay; label: string }[] = [
+  { key: 'morning', label: 'Morning' }, { key: 'afternoon', label: 'Afternoon' }, { key: 'night', label: 'Night' },
+];
 
 interface Props {
   clinicSlug: string;
@@ -60,6 +62,13 @@ export function MedicineEntry({ clinicSlug, csrfToken, index, medicine, disabled
     setQuery(''); setItems([]);
   }
 
+  function toggleTime(time: MedicineTimeOfDay, checked: boolean) {
+    const current = medicine.timing?.timesOfDay ?? [];
+    const timesOfDay = TIMES.map(({ key }) => key).filter((key) => key === time ? checked : current.includes(key));
+    onChange({ ...medicine, frequency: '', timing: timesOfDay.length
+      ? { timesOfDay, mealRelation: medicine.timing?.mealRelation ?? 'unspecified' } : null });
+  }
+
   return <fieldset className="consultation-med">
     <legend>Medicine {index + 1}</legend>
     <div className="consultation-catalog">
@@ -84,6 +93,14 @@ export function MedicineEntry({ clinicSlug, csrfToken, index, medicine, disabled
       {DIRECTION_FIELDS.map(({ key, label }) => <label key={key}>{label}<input type="text" maxLength={key === 'instructions' ? 500 : 160}
         value={medicine[key]} onChange={(event) => onChange({ ...medicine, [key]: event.target.value })} disabled={disabled} /></label>)}
     </div>
+    <fieldset className="consultation-med-timing" disabled={disabled}>
+      <legend>When to take · doctor-entered</legend>
+      <p>Choose regular times, or leave them unchecked and enter a custom frequency. Selecting a time clears any custom frequency.</p>
+      <div className="consultation-time-choices">{TIMES.map(({ key, label }) => <label key={key}><input type="checkbox" checked={medicine.timing?.timesOfDay.includes(key) ?? false} onChange={(event) => toggleTime(key, event.target.checked)} /> {label}</label>)}</div>
+      {medicine.timing && medicine.frequency.trim() && <div className="workflow-error" role="alert"><p>This draft also has custom frequency text. Clear it before finalizing so directions do not conflict.</p><button type="button" className="workflow-link" onClick={() => onChange({ ...medicine, frequency: '' })}>Clear custom frequency</button></div>}
+      {medicine.timing ? <label className="consultation-meal-choice">Food timing<select value={medicine.timing.mealRelation} onChange={(event) => onChange({ ...medicine, timing: { ...medicine.timing!, mealRelation: event.target.value as NonNullable<Medication['timing']>['mealRelation'] } })}><option value="unspecified">Not specified</option><option value="before">Before food</option><option value="after">After food</option><option value="with">With food</option></select></label>
+        : <label className="consultation-custom-frequency">Custom frequency<input type="text" maxLength={160} value={medicine.frequency} placeholder="Enter the doctor’s directions" onChange={(event) => onChange({ ...medicine, frequency: event.target.value })} /></label>}
+    </fieldset>
     <button type="button" className="workflow-link" disabled={disabled} onClick={onRemove}>Remove medicine {index + 1}</button>
   </fieldset>;
 }

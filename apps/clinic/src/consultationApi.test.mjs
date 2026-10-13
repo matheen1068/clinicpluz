@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  ConsultationApiError, finalizeEncounter, getConsultationQueue, readEncounter, searchMedicines,
+  ConsultationApiError, finalizeEncounter, getConsultationQueue, parseMedication, readEncounter, searchMedicines,
   saveDraft, saveVitals,
 } from './consultationApi.ts';
 
@@ -17,6 +17,18 @@ const medicine = {
   name: 'Synthetic medicine', strength: '5 mg', dose: '1 tablet', route: 'oral',
   frequency: 'once daily', duration: '3 days', instructions: 'Synthetic instructions',
 };
+
+test('medicine timing accepts explicit clinician choices and normalizes legacy rows', () => {
+  assert.deepEqual(parseMedication(medicine), { ...medicine, timing: null });
+  const timing = { timesOfDay: ['morning', 'night'], mealRelation: 'after' };
+  assert.deepEqual(parseMedication({ ...medicine, frequency: '', timing }), { ...medicine, frequency: '', timing });
+  for (const bad of [
+    { timesOfDay: [], mealRelation: 'after' },
+    { timesOfDay: ['morning', 'morning'], mealRelation: 'before' },
+    { timesOfDay: ['evening'], mealRelation: 'after' },
+    { timesOfDay: ['night'], mealRelation: 'around' },
+  ]) assert.throws(() => parseMedication({ ...medicine, timing: bad }), ConsultationApiError);
+});
 
 test('medicine lookup uses the clinic session and leaves dose selection to the doctor', async () => {
   const restore = mockFetch(async (url, options) => {
@@ -178,6 +190,7 @@ test('finalized print payload must match the encounter clinic, patient, doctor, 
     { appointmentDate: '2026-10-11' },
     { finalizedAt: '2026-10-10T11:15:00+05:30' },
     { medications: [{ ...medicine, dose: 'Different dose' }] },
+    { medications: [{ ...medicine, timing: { timesOfDay: ['night'], mealRelation: 'after' } }] },
   ];
   for (const badPrint of badPrints) {
     const item = finalizedEncounter();

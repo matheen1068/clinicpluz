@@ -251,8 +251,10 @@ select:focus-visible, input:focus-visible { outline: 3px solid #82d6a3; outline-
 .workspace-nav button { min-height: 38px; padding: 0 17px; color: #557363; border: 0; border-radius: 9px; background: transparent; font-size: 13px; font-weight: 740; }
 .workspace-nav button[aria-current="page"] { color: #155b40; background: #fff; box-shadow: 0 3px 12px rgba(18, 74, 44, .1); }
 .consultation-layout { display: grid; grid-template-columns: minmax(275px, 32%) minmax(0, 1fr); align-items: start; gap: 20px; }
+.consultation-layout.is-doctor { grid-template-columns: minmax(0, 1fr); }
 .consultation-main { display: grid; gap: 17px; min-width: 0; }
 .consultation-list { position: sticky; top: 16px; }
+.consultation-layout.is-doctor .consultation-list { position: static; }
 .consultation-queue-controls { display: flex; align-items: flex-end; gap: 8px; margin-bottom: 15px; }
 .consultation-queue-controls label { display: block; flex: 1; color: #355747; font-size: 12px; font-weight: 700; }
 .consultation-queue-controls input { width: 100%; min-height: 42px; margin-top: 7px; padding: 8px 11px; color: #1b3b32; border: 1px solid #cbded2; border-radius: 9px; background: #fff; font: inherit; font-size: 13px; }
@@ -262,6 +264,31 @@ select:focus-visible, input:focus-visible { outline: 3px solid #82d6a3; outline-
 .consultation-visit-top { display: flex; justify-content: space-between; gap: 8px; }
 .consultation-visit-top strong { color: #1b4935; font-size: 13px; }
 .consultation-visit-top span { color: #25815b; font-weight: 740; }
+.doctor-day-summary { display: flex; justify-content: space-between; align-items: flex-end; gap: 18px; padding: 18px 20px; border: 1px solid #d9e8db; border-radius: 14px; background: linear-gradient(110deg, #eef8f0, #f8fcfa); }
+.doctor-day-summary h5 { margin: 5px 0 4px; color: #1b4935; font-size: 18px; }
+.doctor-day-summary p { margin: 0; color: #5b7565; font-size: 12px; line-height: 1.5; }
+.doctor-day-counts { display: flex; flex-wrap: wrap; gap: 8px; }
+.doctor-day-counts span { min-width: 100px; padding: 8px 11px; border: 1px solid #d2e5d7; border-radius: 10px; background: #fff; color: #587466; font-size: 11px; }
+.doctor-day-counts strong { display: block; color: #17553a; font-size: 18px; }
+.doctor-day-caveat { margin: 13px 0; color: #5b7565; font-size: 12px; line-height: 1.5; }
+.doctor-slot-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 0; padding: 0; list-style: none; }
+.doctor-slot { min-width: 0; min-height: 107px; padding: 12px; border: 1px solid #dce8e0; border-radius: 12px; background: #f8faf8; }
+.doctor-slot.has-visit { border-color: #a9d8b7; background: #f3faf5; }
+.doctor-slot-time { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 8px; }
+.doctor-slot-time strong { color: #1f4f39; font-size: 14px; }
+.doctor-slot-time span { color: #708477; font-size: 10px; }
+.doctor-slot-visit { display: grid; gap: 4px; width: 100%; margin-top: 10px; padding: 9px; border: 1px solid #c8e5cf; border-radius: 9px; background: #fff; color: #3c6650; text-align: left; overflow-wrap: anywhere; }
+.doctor-slot-visit:hover, .doctor-slot-visit.is-selected { border-color: #328c61; background: #eaf7ee; }
+.doctor-slot-visit:focus-visible { outline: 3px solid #249466; outline-offset: 2px; }
+.doctor-slot-visit strong { color: #1c5137; font-size: 12px; }
+.doctor-slot-visit span, .doctor-slot-visit small { font-size: 10px; line-height: 1.4; }
+.doctor-slot-visit small { color: #16724b; font-weight: 760; }
+.doctor-day-other { margin-top: 18px; }
+.doctor-day-other h5 { margin: 0 0 4px; color: #244f39; font-size: 14px; }
+.doctor-day-other p { margin: 0 0 10px; color: #5b7565; font-size: 11px; }
+.doctor-day-other ul { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; padding: 0; list-style: none; }
+.doctor-day-other li { padding: 10px; border: 1px solid #dce8e0; border-radius: 10px; }
+.doctor-day-other li > span { color: #315f45; font-size: 12px; font-weight: 750; }
 .consultation-empty { min-height: 210px; padding: 34px; }
 .consultation-empty h4 { margin: 13px 0 8px; color: #1d4637; font-size: 20px; }
 .consultation-empty p { max-width: 460px; margin: 0 0 16px; color: #6c8374; font-size: 13px; line-height: 1.55; }
@@ -333,6 +360,15 @@ select:focus-visible, input:focus-visible { outline: 3px solid #82d6a3; outline-
 .consultation-med legend { padding: 0 6px; color: #285d42; font-size: 12px; font-weight: 760; }
 .consultation-med-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
 .consultation-med-fields label:last-child { grid-column: 1 / -1; }
+.consultation-med-timing { margin: 0 0 13px; padding: 13px; border: 1px solid #d8e7db; border-radius: 10px; background: #f8fcf9; }
+.consultation-med-timing legend { color: #285d42; font-size: 12px; font-weight: 760; }
+.consultation-med-timing p { margin: 0 0 10px; color: #668074; font-size: 11px; line-height: 1.5; }
+.consultation-time-choices { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.consultation-time-choices label { display: inline-flex; align-items: center; gap: 6px; min-height: 38px; padding: 6px 11px; border: 1px solid #cbded2; border-radius: 8px; background: #fff; color: #245640; font-size: 12px; font-weight: 720; }
+.consultation-time-choices label:has(input:checked) { border-color: #249466; background: #eaf7ee; }
+.consultation-time-choices input { accent-color: #18845b; }
+.consultation-meal-choice, .consultation-custom-frequency { display: block; color: #315848; font-size: 12px; font-weight: 700; }
+.consultation-meal-choice select, .consultation-custom-frequency input { display: block; width: 100%; max-width: 330px; min-height: 42px; margin-top: 7px; padding: 8px 10px; border: 1px solid #cbded2; border-radius: 9px; background: #fff; color: #1b3b32; font: inherit; font-size: 13px; }
 .consultation-catalog { position: relative; margin: 0 0 8px; }
 .consultation-catalog label { display: block; color: #315848; font-size: 12px; font-weight: 700; }
 .consultation-catalog input { width: 100%; min-height: 42px; margin-top: 7px; padding: 8px 10px; color: #1b3b32; border: 1px solid #cbded2; border-radius: 9px; background: #fff; font: inherit; font-size: 13px; }
@@ -356,14 +392,45 @@ select:focus-visible, input:focus-visible { outline: 3px solid #82d6a3; outline-
 .consultation-print-action h4 { margin: 0 0 6px; }
 .consultation-print-action p { margin: 0; color: #668074; font-size: 12px; }
 .consultation-print-action .workflow-action { width: auto; min-height: 42px; margin: 0; }
+.prescription-handoff-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; }
+.prescription-handoff-head .consultation-queue-controls { margin: 0; }
+.prescription-handoff-layout { display: grid; grid-template-columns: minmax(220px, 32%) minmax(0, 1fr); gap: 16px; }
+.prescription-handoff-list { display: grid; align-content: start; gap: 8px; max-height: 630px; overflow: auto; }
+.prescription-handoff-item { display: grid; gap: 5px; width: 100%; padding: 12px; border: 1px solid #dce8e0; border-radius: 10px; background: #fbfdfb; color: #4f6d5c; text-align: left; }
+.prescription-handoff-item:hover, .prescription-handoff-item.is-selected { border-color: #69b587; background: #ecf8ef; }
+.prescription-handoff-item:focus-visible { outline: 3px solid #249466; outline-offset: 2px; }
+.prescription-handoff-item strong { color: #214c38; font-size: 13px; }
+.prescription-handoff-item span, .prescription-handoff-item small { font-size: 11px; line-height: 1.5; }
+.prescription-handoff-detail { min-width: 0; padding: 18px; border: 1px solid #dfebe2; border-radius: 12px; background: #f9fcfa; }
+.prescription-handoff-person { padding-bottom: 14px; border-bottom: 1px solid #dfe9e2; }
+.prescription-handoff-person h5 { margin: 5px 0; color: #1d4935; font-size: 20px; }
+.prescription-handoff-person p, .prescription-handoff-detail li p { margin: 4px 0; color: #4a6857; font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.prescription-handoff-detail h6 { margin: 17px 0 9px; color: #204c37; font-size: 13px; }
+.prescription-handoff-detail ol { display: grid; gap: 9px; margin: 0; padding-left: 22px; }
+.prescription-handoff-detail li { padding: 9px; border: 1px solid #e0ebe3; border-radius: 8px; background: #fff; }
+.prescription-handoff-detail li strong { color: #1f4c36; font-size: 12px; }
+.prescription-handoff-print { width: auto; min-height: 40px; margin-top: 16px; }
+.prescription-email { margin-top: 18px; padding-top: 16px; border-top: 1px solid #dfe9e2; }
+.prescription-email h6 { margin: 0 0 6px; }
+.prescription-email > p, .prescription-email-confirm p { margin: 6px 0 12px; color: #4a6857; font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; }
+.prescription-email-confirm { padding: 12px; border: 1px solid #cce3d1; border-radius: 10px; background: #fff; }
+.prescription-email-confirm label { display: flex; align-items: flex-start; gap: 8px; color: #244e39; font-size: 12px; line-height: 1.5; }
+.prescription-email-confirm input { margin-top: 2px; accent-color: #18845b; }
+.prescription-email-confirm .workflow-action { width: auto; min-height: 40px; margin-top: 12px; }
 .prescription-print { display: none; }
 
 @media (max-width: 980px) {
   .consultation-layout { grid-template-columns: 1fr; }
   .consultation-list { position: static; }
   .consultation-visit-list { grid-template-columns: repeat(2, minmax(0, 1fr)); max-height: none; }
+  .doctor-slot-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 @media (max-width: 650px) {
+  .prescription-handoff-head { align-items: stretch; flex-direction: column; }
+  .prescription-handoff-layout { grid-template-columns: 1fr; }
+  .prescription-handoff-list { max-height: 280px; }
+  .doctor-day-summary { align-items: flex-start; flex-direction: column; }
+  .doctor-slot-grid, .doctor-day-other ul { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .consultation-history-layout { grid-template-columns: 1fr; }
   .consultation-history-list ul { max-height: 300px; }
   .consultation-vital-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -374,6 +441,7 @@ select:focus-visible, input:focus-visible { outline: 3px solid #82d6a3; outline-
   .consultation-print-action .workflow-action { width: 100%; }
 }
 @media (max-width: 420px) {
+  .doctor-slot-grid, .doctor-day-other ul { grid-template-columns: 1fr; }
   .consultation-vital-grid label.consultation-observed { grid-column: 1 / -1; }
   .consultation-queue-controls { align-items: stretch; flex-direction: column; }
   .consultation-queue-controls .workflow-link { width: 100%; }
@@ -383,7 +451,7 @@ select:focus-visible, input:focus-visible { outline: 3px solid #82d6a3; outline-
   html, body, .app-layout, .login-panel { min-width: 0; min-height: 0 !important; background: #fff !important; }
   .app-layout--workspace .login-panel { min-height: 0; padding: 0; }
   .app-layout--workspace .panel-center { width: 100%; margin: 0; padding: 0; }
-  .panel-top, .panel-footer, .demo-banner, .workspace-header, .workspace-nav, .consultation > :not(.prescription-print) { display: none !important; }
+  .panel-top, .panel-footer, .demo-banner, .workspace-header, .workspace-nav, .consultation > :not(.prescription-print), .prescription-handoff > :not(.prescription-print) { display: none !important; }
   .prescription-print { display: block !important; position: static; width: 100%; padding: 0; color: #111; font: 12pt/1.45 Georgia, serif; }
   .prescription-print .print-pilot { padding: 8px 0; border-bottom: 1px solid #777; font: bold 9pt/1.4 Arial, sans-serif; text-transform: uppercase; }
   .prescription-print header { margin: 22px 0 15px; border-bottom: 2px solid #111; }

@@ -173,6 +173,25 @@ test('a Cognito identity with the wrong stable sub cannot acquire clinic members
   assert.equal((await h.request('goodwell', 'auth/session')).statusCode, 401);
 });
 
+test('pharmacist receives only their own clinic role and loses the session when disabled', async () => {
+  const h = harness();
+  h.repo.members.set('goodwell:pharmacy', {
+    clinicSlug: 'goodwell', username: 'pharmacy', cognitoUsername: 'goodwell-pharmacy-staff',
+    sub: 'goodwell-pharmacy-sub', displayName: 'Goodwell Pharmacy', role: 'pharmacist', active: true,
+  });
+  const csrf = await h.bootstrap('goodwell');
+  const signedIn = await h.request('goodwell', 'auth/login', {
+    method: 'POST', headers: { 'x-csrf-token': csrf },
+    body: { username: 'pharmacy', password: h.password },
+  });
+  assert.equal(signedIn.statusCode, 200);
+  assert.equal(JSON.parse(signedIn.body).user.role, 'pharmacist');
+  assert.equal(JSON.parse((await h.request('goodwell', 'auth/session')).body).user.role, 'pharmacist');
+  assert.equal((await h.request('blesswell', 'auth/session')).statusCode, 403);
+  h.repo.members.get('goodwell:pharmacy').active = false;
+  assert.equal((await h.request('goodwell', 'auth/session')).statusCode, 401);
+});
+
 test('expired sessions are rejected even if DynamoDB TTL has not removed the item', async () => {
   const h = harness();
   const csrf = await h.bootstrap('goodwell');

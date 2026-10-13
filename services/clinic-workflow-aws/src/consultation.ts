@@ -20,17 +20,25 @@ export interface Note {
   plan: string;
 }
 
+export interface MedicationTiming {
+  timesOfDay: Array<'morning' | 'afternoon' | 'night'>;
+  mealRelation: 'before' | 'after' | 'with' | 'unspecified';
+}
+
 export interface Medication {
   name: string;
   strength: string;
   dose: string;
   route: string;
   frequency: string;
+  timing: MedicationTiming | null;
   duration: string;
   instructions: string;
 }
 
-export interface MedicationRecord extends Medication {
+// Older finalized encounters have no timing field; display normalizes them to null.
+export interface MedicationRecord extends Omit<Medication, 'timing'> {
+  timing?: MedicationTiming | null;
   prescriberSub: string;
   encounterAppointmentId: string;
   orderedAt: string;
@@ -118,19 +126,30 @@ export function parseNote(value: unknown): Note | null {
 }
 
 export function parseMedications(value: unknown, actorSub: string, appointmentId: string, now: Date): MedicationRecord[] | null {
-  const keys: Array<keyof Medication> = ['name', 'strength', 'dose', 'route', 'frequency', 'duration', 'instructions'];
+  const keys = ['name', 'strength', 'dose', 'route', 'frequency', 'duration', 'instructions'] as const;
   if (!Array.isArray(value) || value.length > 20) return null;
   const records: MedicationRecord[] = [];
   for (const row of value) {
-    if (!object(row) || !exactKeys(row, keys) || !keys.every((key) => key in row)) return null;
-    const medication = {} as Medication;
+    if (!object(row) || !exactKeys(row, [...keys, 'timing']) || !keys.every((key) => key in row)) return null;
+    const medication = {} as Pick<Medication, typeof keys[number]>;
     for (const key of keys) {
       const text = boundedText(row[key], key === 'instructions' ? 500 : 160);
       if (text === null) return null;
       medication[key] = text;
     }
     if (!medication.name) return null;
-    records.push({ ...medication, prescriberSub: actorSub,
+    let timing: MedicationTiming | null = null;
+    if (row.timing !== undefined && row.timing !== null) {
+      if (!object(row.timing) || !exactKeys(row.timing, ['timesOfDay', 'mealRelation']) ||
+          !Array.isArray(row.timing.timesOfDay) || row.timing.timesOfDay.length < 1 ||
+          row.timing.timesOfDay.length > 3 ||
+          !row.timing.timesOfDay.every((part) => part === 'morning' || part === 'afternoon' || part === 'night') ||
+          new Set(row.timing.timesOfDay).size !== row.timing.timesOfDay.length) return null;
+      const meal = row.timing.mealRelation === undefined ? 'unspecified' : row.timing.mealRelation;
+      if (meal !== 'before' && meal !== 'after' && meal !== 'with' && meal !== 'unspecified') return null;
+      timing = { timesOfDay: [...row.timing.timesOfDay], mealRelation: meal };
+    }
+    records.push({ ...medication, timing, prescriberSub: actorSub,
       encounterAppointmentId: appointmentId, orderedAt: now.toISOString() });
   }
   return records;
@@ -138,11 +157,12 @@ export function parseMedications(value: unknown, actorSub: string, appointmentId
 
 export function medicationForDisplay(record: MedicationRecord): Medication {
   const { name, strength, dose, route, frequency, duration, instructions } = record;
-  return { name, strength, dose, route, frequency, duration, instructions };
+  return { name, strength, dose, route, frequency, timing: record.timing ?? null, duration, instructions };
 }
 
 export function readyToFinalize(encounter: Encounter): boolean {
   return encounter.note.assessment.length > 0 && encounter.note.plan.length > 0 &&
     encounter.medications.every((medication) => Boolean(medication.name && medication.dose &&
-      medication.route && medication.frequency && medication.duration && medication.instructions));
+      medication.route && Boolean(medication.frequency) !== Boolean(medication.timing) &&
+      medication.duration && medication.instructions));
 }

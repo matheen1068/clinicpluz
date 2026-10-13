@@ -90,7 +90,7 @@ test('history detail remains read-only and must match the selected finalized vis
     assert.equal(detail.status, 'finalized');
     assert.equal(detail.note.assessment, note.assessment);
     assert.equal(detail.vitals.pulseBpm, 72);
-    assert.deepEqual(detail.medications, [medication]);
+    assert.deepEqual(detail.medications, [{ ...medication, timing: null }]);
   } finally { restore(); }
 });
 

@@ -20,6 +20,37 @@ Parameters:
   StaffUserPoolArn:
     Type: String
     Description: ARN of the same clinic staff user pool
+  EnablePrescriptionDemoEmail:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: Explicitly enable synthetic prescription PDF email only in staging
+  PrescriptionSenderEmail:
+    Type: String
+    Default: ''
+    AllowedPattern: '(^$)|(^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,63}$)'
+    Description: SES-verified sender address in this stack's Region when demo email is enabled
+  PrescriptionAllowedRecipientEmail:
+    Type: String
+    Default: ''
+    AllowedPattern: '(^$)|(^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,63}$)'
+    Description: One SES-verified synthetic recipient; must match the stored patient email
+
+Rules:
+  ValidPrescriptionDemoEmailConfiguration:
+    RuleCondition: !Equals [!Ref EnablePrescriptionDemoEmail, 'true']
+    Assertions:
+      - Assert: !Equals [!Ref StageName, staging]
+        AssertDescription: Synthetic prescription email can only be enabled in staging.
+      - Assert: !Not [!Equals [!Ref PrescriptionSenderEmail, '']]
+        AssertDescription: A sender address is required when synthetic prescription email is enabled.
+      - Assert: !Not [!Equals [!Ref PrescriptionAllowedRecipientEmail, '']]
+        AssertDescription: A synthetic recipient is required when prescription email is enabled.
+
+Conditions:
+  PrescriptionEmailEnabled: !And
+    - !Equals [!Ref StageName, staging]
+    - !Equals [!Ref EnablePrescriptionDemoEmail, 'true']
 
 Resources:
   WorkflowEdgeSecret:
@@ -69,7 +100,7 @@ Resources:
       Runtime: nodejs22.x
       Architectures: [arm64]
       MemorySize: 256
-      Timeout: 10
+      Timeout: 20
       Environment:
         Variables:
           AUTH_TABLE: !Ref AuthTableName
@@ -77,6 +108,10 @@ Resources:
           STAFF_USER_POOL_ID: !Ref StaffUserPoolId
           PUBLIC_ORIGIN: !Ref PublicOrigin
           EDGE_SECRET_ARN: !Ref WorkflowEdgeSecret
+          STAGE_NAME: !Ref StageName
+          PRESCRIPTION_EMAIL_ENABLED: !If [PrescriptionEmailEnabled, 'true', 'false']
+          PRESCRIPTION_EMAIL_SENDER: !Ref PrescriptionSenderEmail
+          PRESCRIPTION_EMAIL_ALLOWED_RECIPIENT: !Ref PrescriptionAllowedRecipientEmail
       Policies:
         - Statement:
             - Effect: Allow
@@ -93,6 +128,7 @@ Resources:
                 - dynamodb:GetItem
                 - dynamodb:Query
                 - dynamodb:PutItem
+                - dynamodb:UpdateItem
                 - dynamodb:ConditionCheckItem
               Resource: !GetAtt ClinicalTable.Arn
               Condition:
@@ -108,6 +144,20 @@ Resources:
               Action:
                 - secretsmanager:GetSecretValue
               Resource: !Ref WorkflowEdgeSecret
+        - !If
+          - PrescriptionEmailEnabled
+          - Statement:
+              - Effect: Allow
+                Action: ses:SendEmail
+                Resource: !Sub arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/${PrescriptionSenderEmail}
+                Condition:
+                  StringEquals:
+                    ses:FromAddress: !Ref PrescriptionSenderEmail
+                  ForAllValues:StringEquals:
+                    ses:Recipients: [!Ref PrescriptionAllowedRecipientEmail]
+                  'Null':
+                    ses:Recipients: 'false'
+          - !Ref AWS::NoValue
       Events:
         Doctors:
           Type: HttpApi
@@ -127,6 +177,18 @@ Resources:
         ConsultationQueue:
           Type: HttpApi
           Properties: { ApiId: !Ref WorkflowApi, Path: '/api/workflow/clinics/{slug}/consultations', Method: GET, PayloadFormatVersion: '2.0' }
+        PrescriptionHandoffQueue:
+          Type: HttpApi
+          Properties: { ApiId: !Ref WorkflowApi, Path: '/api/workflow/clinics/{slug}/consultations/prescriptions', Method: GET, PayloadFormatVersion: '2.0' }
+        PrescriptionHandoffRead:
+          Type: HttpApi
+          Properties: { ApiId: !Ref WorkflowApi, Path: '/api/workflow/clinics/{slug}/consultations/prescriptions/read', Method: POST, PayloadFormatVersion: '2.0' }
+        PrescriptionEmailPreview:
+          Type: HttpApi
+          Properties: { ApiId: !Ref WorkflowApi, Path: '/api/workflow/clinics/{slug}/consultations/prescriptions/email/preview', Method: POST, PayloadFormatVersion: '2.0' }
+        PrescriptionEmailSend:
+          Type: HttpApi
+          Properties: { ApiId: !Ref WorkflowApi, Path: '/api/workflow/clinics/{slug}/consultations/prescriptions/email', Method: POST, PayloadFormatVersion: '2.0' }
         ConsultationRead:
           Type: HttpApi
           Properties: { ApiId: !Ref WorkflowApi, Path: '/api/workflow/clinics/{slug}/consultations/read', Method: POST, PayloadFormatVersion: '2.0' }

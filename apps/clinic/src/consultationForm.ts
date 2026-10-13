@@ -27,7 +27,7 @@ export function emptyNote(): ConsultationNote {
   return { chiefComplaint: '', history: '', exam: '', assessment: '', plan: '' };
 }
 export function emptyMedication(): Medication {
-  return { name: '', strength: '', dose: '', route: '', frequency: '', duration: '', instructions: '' };
+  return { name: '', strength: '', dose: '', route: '', frequency: '', duration: '', instructions: '', timing: null };
 }
 function kolkataParts(date: Date) {
   const parts = new Intl.DateTimeFormat('en-US', {
@@ -100,6 +100,8 @@ export function mergeRecoveredFields(snapshot: RecoverySnapshot, serverVitals: V
 export function completeForFinalize(note: ConsultationNote, medications: Medication[]): boolean {
   return note.assessment.trim().length > 0 && note.plan.trim().length > 0 &&
     medications.every((medication) => medication.name.trim().length > 0 && medication.dose.trim().length > 0 &&
-      medication.route.trim().length > 0 && medication.frequency.trim().length > 0 &&
+      medication.route.trim().length > 0 &&
+      ((medication.frequency.trim().length > 0 && !medication.timing) ||
+        (medication.frequency.trim().length === 0 && !!medication.timing && medication.timing.timesOfDay.length > 0)) &&
       medication.duration.trim().length > 0 && medication.instructions.trim().length > 0);
 }

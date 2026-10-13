@@ -2,8 +2,9 @@ import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto
 import { EMPTY_NOTE, medicationForDisplay, parseMedications, parseNote, parseVitals, readyToFinalize,
   type Encounter } from './consultation.ts';
 import { historyIdFor, validHistoryId, type HistoryEntry } from './history.ts';
+import { renderPrescriptionPdf, UnsupportedPrescriptionText } from './prescription-pdf.ts';
 
-export type Role = 'clinic_admin' | 'doctor' | 'receptionist' | 'nurse' | 'lab_tech' | 'billing';
+export type Role = 'clinic_admin' | 'doctor' | 'receptionist' | 'nurse' | 'lab_tech' | 'billing' | 'pharmacist';
 export type Sex = 'female' | 'male' | 'other' | 'undisclosed';
 export type Source = 'phone' | 'walk_in';
 export type AppointmentStatus = 'booked' | 'checked_in';
@@ -47,15 +48,26 @@ export interface WorkflowStore {
   saveEncounter(slug: string, appointment: Appointment, encounter: Encounter,
     expectedRevision: number, actorSub: string, action: 'vitals.saved' | 'draft.saved' | 'encounter.finalized',
     assignedDoctorSub?: string): Promise<boolean>;
+  claimPrescriptionEmail(slug: string, appointmentId: string, revision: number,
+    recipientHash: string, actorSub: string, at: string,
+    context: { clinicDate: string; patientId: string; doctorId: string; storedEmail: string }):
+    Promise<'claimed' | 'pending' | 'accepted' | 'unknown' | 'recipient_changed' | 'stored_email_changed'>;
+  markPrescriptionEmail(slug: string, appointmentId: string, revision: number,
+    status: 'accepted' | 'unknown', at: string, messageId?: string): Promise<void>;
 }
 export interface HttpInput {
   method: string; path: string; queryString?: string; headers: Record<string, string | undefined>;
   cookies?: string[]; body?: string; isBase64Encoded?: boolean;
 }
 export interface HttpResult { statusCode: number; headers: Record<string, string>; body: string }
-export interface Config { publicOrigin: string; edgeKey: string; now?: () => Date }
+export interface PrescriptionEmailConfig {
+  allowedRecipient: string;
+  send(to: string, pdf: Uint8Array): Promise<string>;
+}
+export interface Config { publicOrigin: string; edgeKey: string; now?: () => Date; prescriptionEmail?: PrescriptionEmailConfig }
 
-const ROLES = new Set<Role>(['clinic_admin', 'doctor', 'receptionist', 'nurse', 'lab_tech', 'billing']);
+const ROLES = new Set<Role>(['clinic_admin', 'doctor', 'receptionist', 'nurse', 'lab_tech', 'billing', 'pharmacist']);
+const PRESCRIPTION_ROLES = new Set<Role>(['receptionist', 'pharmacist']);
 const VIEW_ROLES = new Set<Role>(['clinic_admin', 'receptionist', 'nurse']);
 const WRITE_ROLES = new Set<Role>(['clinic_admin', 'receptionist', 'nurse']);
 const RESERVED = new Set(['admin', 'api', 'app', 'control', 'controlpanel', 'staging', 'www']);
@@ -156,6 +168,45 @@ function publicAppointment(appointment: Appointment) {
   const { id, patientId, patientName, doctorId, doctorName, startAt, source, status } = appointment;
   return { id, patientId, patientName, doctorId, doctorName, startAt, source, status };
 }
+function printablePrescription(encounter: Encounter, clinic: Clinic, patient: Patient) {
+  if (encounter.status !== 'finalized' || encounter.medications.length === 0) return undefined;
+  if (!encounter.finalizedAt || !encounter.finalizedBySub || !encounter.finalizedByDisplayName ||
+      encounter.finalizedDoctorId !== encounter.doctorId) throw new Error('Finalized clinician identity unavailable');
+  return {
+    clinic: { slug: clinic.slug, displayName: clinic.displayName ?? clinic.slug },
+    doctor: { id: encounter.finalizedDoctorId, displayName: encounter.finalizedByDisplayName },
+    patient: { id: patient.id, fullName: patient.fullName, ageYears: patient.ageYears, sex: patient.sex },
+    appointmentDate: encounter.clinicDate, finalizedAt: encounter.finalizedAt,
+    medications: encounter.medications.map(medicationForDisplay),
+  };
+}
+function finalizedPrescriptionMatches(encounter: Encounter | null, appointment: Appointment): encounter is Encounter {
+  return Boolean(encounter && encounter.appointmentId === appointment.id &&
+    encounter.clinicDate === appointment.clinicDate && encounter.patientId === appointment.patientId &&
+    encounter.doctorId === appointment.doctorId && encounter.status === 'finalized' &&
+    encounter.finalizedAt && encounter.finalizedBySub && encounter.finalizedByDisplayName &&
+    encounter.finalizedDoctorId === appointment.doctorId && Array.isArray(encounter.medications) &&
+    encounter.medications.every((medication) => medication.encounterAppointmentId === appointment.id &&
+      medication.prescriberSub === encounter.finalizedBySub));
+}
+async function resolveFinalizedPrescription(store: WorkflowStore, clinicSlug: string,
+  appointmentId: string, clinicDate: string): Promise<{ appointment: Appointment; patient: Patient; encounter: Encounter } | null> {
+  const appointments = await store.listAppointments(clinicSlug, clinicDate);
+  const appointment = appointments.find((row) => row.id === appointmentId && row.clinicDate === clinicDate);
+  if (!appointment) return null;
+  const [patient, encounter] = await Promise.all([
+    store.getPatient(clinicSlug, appointment.patientId),
+    store.getEncounter(clinicSlug, appointment.clinicDate, appointment.id),
+  ]);
+  if (!patient || patient.id !== appointment.patientId) throw new Error('Invalid patient link');
+  if (!encounter || encounter.status !== 'finalized' || encounter.medications.length === 0) return null;
+  if (!finalizedPrescriptionMatches(encounter, appointment)) throw new Error('Invalid finalized prescription');
+  return { appointment, patient, encounter };
+}
+function maskEmail(value: string): string {
+  const at = value.lastIndexOf('@');
+  return `${value[0]}***${value.slice(at)}`;
+}
 function consultationResponse(encounter: Encounter, clinic: Clinic, patient: Patient, doctor: Doctor, role: Role) {
   if (encounter.status === 'finalized' && (!encounter.finalizedBySub || !encounter.finalizedByDisplayName ||
       encounter.finalizedDoctorId !== encounter.doctorId)) throw new Error('Finalized clinician identity unavailable');
@@ -173,14 +224,8 @@ function consultationResponse(encounter: Encounter, clinic: Clinic, patient: Pat
   if (role !== 'doctor') return { encounter: publicEncounter };
   publicEncounter.note = encounter.note;
   publicEncounter.medications = encounter.medications.map(medicationForDisplay);
-  const printablePrescription = encounter.status === 'finalized' && encounter.medications.length > 0 ? {
-    clinic: { slug: clinic.slug, displayName: clinic.displayName ?? clinic.slug },
-    doctor: shownDoctor,
-    patient: { id: patient.id, fullName: patient.fullName, ageYears: patient.ageYears, sex: patient.sex },
-    appointmentDate: encounter.clinicDate, finalizedAt: encounter.finalizedAt,
-    medications: encounter.medications.map(medicationForDisplay),
-  } : undefined;
-  return printablePrescription ? { encounter: publicEncounter, printablePrescription } : { encounter: publicEncounter };
+  const prescription = printablePrescription(encounter, clinic, patient);
+  return prescription ? { encounter: publicEncounter, printablePrescription: prescription } : { encounter: publicEncounter };
 }
 
 interface HistoryCursor {
@@ -227,6 +272,10 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
       !/^[a-z0-9-]+\.cloudfront\.net$/.test(origin.hostname) || config.edgeKey.length < 32) {
     throw new Error('Invalid staging workflow configuration');
   }
+  if (config.prescriptionEmail && (email(config.prescriptionEmail.allowedRecipient) !==
+      config.prescriptionEmail.allowedRecipient || typeof config.prescriptionEmail.send !== 'function')) {
+    throw new Error('Invalid staging prescription email configuration');
+  }
   const now = config.now ?? (() => new Date());
 
   return {
@@ -234,7 +283,7 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
       try {
         if (!safeEqual(input.headers['x-clinicpluz-edge-key'] ?? '', config.edgeKey)) return result(403, { error: 'Forbidden' });
         if (input.headers.origin && input.headers.origin !== config.publicOrigin) return result(403, { error: 'Origin rejected' });
-        const match = /^\/api\/workflow\/clinics\/([a-z0-9-]+)\/(doctors|patients(?:\/search)?|appointments|consultations(?:\/(?:read|vitals|draft|finalize|medicines\/search|history\/(?:list|detail)))?)$/.exec(input.path);
+        const match = /^\/api\/workflow\/clinics\/([a-z0-9-]+)\/(doctors|patients(?:\/search)?|appointments|consultations(?:\/(?:read|vitals|draft|finalize|medicines\/search|history\/(?:list|detail)|prescriptions(?:\/read|\/email(?:\/preview)?)?))?)$/.exec(input.path);
         if (!match || !slug(match[1])) return result(404, { error: 'Not found' });
         const clinicSlug = match[1];
         const endpoint = match[2];
@@ -252,10 +301,16 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
             member.username !== session.username || member.sub !== session.sub || !ROLES.has(member.role) ||
             !(await identity.isActive(member.cognitoUsername, member.sub))) return result(403, { error: 'Clinic access denied' });
         const isConsultation = endpoint.startsWith('consultations');
+        const isPrescriptionHandoff = endpoint === 'consultations/prescriptions' ||
+          endpoint === 'consultations/prescriptions/read';
+        const isPrescriptionEmail = endpoint === 'consultations/prescriptions/email' ||
+          endpoint === 'consultations/prescriptions/email/preview';
         const module = isConsultation ? 'consultations' : endpoint.startsWith('patients') ? 'patient_intake' : 'appointments';
         if (!modules || modules.clinicSlug !== clinicSlug || modules[module] !== true) return result(403, { error: 'Module unavailable' });
         if (isConsultation) {
-          if (member.role !== 'nurse' && member.role !== 'doctor') return result(403, { error: 'Role not allowed' });
+          if (isPrescriptionEmail ? member.role !== 'receptionist' :
+              isPrescriptionHandoff ? !PRESCRIPTION_ROLES.has(member.role) :
+                member.role !== 'nurse' && member.role !== 'doctor') return result(403, { error: 'Role not allowed' });
           if ((endpoint === 'consultations/draft' || endpoint === 'consultations/finalize' ||
               endpoint === 'consultations/medicines/search' || endpoint.startsWith('consultations/history/')) &&
               member.role !== 'doctor') {
@@ -267,6 +322,11 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
         }
         if (input.method === 'POST' && (input.headers.origin !== config.publicOrigin ||
             !safeEqual(input.headers['x-csrf-token'] ?? '', session.csrfToken))) return result(403, { error: 'CSRF rejected' });
+        if (isPrescriptionEmail && input.method !== 'POST') return result(404, { error: 'Not found' });
+        if (isPrescriptionHandoff &&
+            (endpoint === 'consultations/prescriptions' ? input.method !== 'GET' : input.method !== 'POST')) {
+          return result(404, { error: 'Not found' });
+        }
 
         if (input.method === 'GET' && endpoint === 'doctors' && !(input.queryString ?? '')) {
           const doctors = await store.listDoctors(clinicSlug);
@@ -355,6 +415,103 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
           };
           const booked = await store.createAppointment(clinicSlug, appointment);
           return booked ? result(201, { appointment: publicAppointment(appointment) }) : result(409, { error: 'Doctor slot already booked' });
+        }
+        if (input.method === 'GET' && endpoint === 'consultations/prescriptions') {
+          const date = singleQuery(input.queryString, 'date');
+          if (!date || !calendarDate(date)) return result(400, { error: 'Invalid date' });
+          const [appointments, statuses] = await Promise.all([
+            store.listAppointments(clinicSlug, date), store.listEncounterStatuses(clinicSlug, date),
+          ]);
+          const finalized = appointments.filter((appointment) => statuses.get(appointment.id) === 'finalized');
+          const items = [];
+          // The clinic-date partition is capped at 200 appointments; limit concurrent canonical reads.
+          for (let offset = 0; offset < finalized.length; offset += 20) {
+            const batch = finalized.slice(offset, offset + 20);
+            const encounters = await Promise.all(batch.map((appointment) =>
+              store.getEncounter(clinicSlug, date, appointment.id)));
+            for (let index = 0; index < batch.length; index += 1) {
+              const appointment = batch[index];
+              const encounter = encounters[index];
+              if (!finalizedPrescriptionMatches(encounter, appointment)) throw new Error('Invalid finalized prescription');
+              if (encounter.medications.length === 0) continue;
+              items.push({ appointmentId: appointment.id, clinicDate: appointment.clinicDate,
+                patientId: appointment.patientId, patientName: appointment.patientName,
+                doctorId: encounter.finalizedDoctorId, doctorName: encounter.finalizedByDisplayName,
+                startAt: appointment.startAt, finalizedAt: encounter.finalizedAt });
+            }
+          }
+          return result(200, { items });
+        }
+        if (input.method === 'POST' && endpoint === 'consultations/prescriptions/read' && !(input.queryString ?? '')) {
+          const request = body(input, 2048);
+          if (!request || !hasOnly(request, ['appointmentId', 'clinicDate']) ||
+              typeof request.appointmentId !== 'string' || !ID.test(request.appointmentId) ||
+              typeof request.clinicDate !== 'string' || !calendarDate(request.clinicDate)) {
+            return result(400, { error: 'Invalid prescription request' });
+          }
+          const found = await resolveFinalizedPrescription(store, clinicSlug, request.appointmentId, request.clinicDate);
+          return found ? result(200, { status: 'finalized',
+            printablePrescription: printablePrescription(found.encounter, clinic, found.patient) }) :
+            result(404, { error: 'Prescription not found' });
+        }
+        if (input.method === 'POST' && isPrescriptionEmail && !(input.queryString ?? '')) {
+          const preview = endpoint.endsWith('/preview');
+          const request = body(input, 2048);
+          if (!request || !hasOnly(request, ['appointmentId', 'clinicDate',
+            ...(preview ? [] : ['confirmPatientEmail', 'expectedRecipientEmail'])]) ||
+              typeof request.appointmentId !== 'string' || !ID.test(request.appointmentId) ||
+              typeof request.clinicDate !== 'string' || !calendarDate(request.clinicDate) ||
+              (!preview && (request.confirmPatientEmail !== true ||
+                typeof request.expectedRecipientEmail !== 'string' ||
+                email(request.expectedRecipientEmail) !== request.expectedRecipientEmail))) {
+            return result(400, { error: 'Invalid prescription email request' });
+          }
+          if (!config.prescriptionEmail) return result(503, { error: 'Demo prescription email unavailable' });
+          const found = await resolveFinalizedPrescription(store, clinicSlug, request.appointmentId, request.clinicDate);
+          if (!found) return result(404, { error: 'Prescription not found' });
+          const recipient = email(found.patient.email);
+          if (!recipient) return result(409, { error: 'Patient email unavailable' });
+          if (!preview && request.expectedRecipientEmail !== recipient) {
+            return result(409, { error: 'Patient email changed; review again' });
+          }
+          if (recipient !== config.prescriptionEmail.allowedRecipient) {
+            return result(409, { error: 'Demo email is limited to the configured test recipient' });
+          }
+          const recipientMasked = maskEmail(recipient);
+          if (preview) return result(200, { status: 'ready', recipientEmail: recipient, recipientMasked });
+          const prescription = printablePrescription(found.encounter, clinic, found.patient);
+          if (!prescription) return result(404, { error: 'Prescription not found' });
+          let pdf: Uint8Array;
+          try { pdf = await renderPrescriptionPdf(prescription); }
+          catch (error) {
+            if (error instanceof UnsupportedPrescriptionText) {
+              return result(422, { error: 'Prescription cannot be rendered for demo email' });
+            }
+            throw error;
+          }
+          const recipientHash = createHash('sha256').update(recipient).digest('hex');
+          const claimed = await store.claimPrescriptionEmail(clinicSlug, found.appointment.id,
+            found.encounter.revision, recipientHash, session.sub, now().toISOString(), {
+              clinicDate: found.appointment.clinicDate, patientId: found.patient.id,
+              doctorId: found.appointment.doctorId, storedEmail: found.patient.email!,
+            });
+          if (claimed === 'stored_email_changed') return result(409, { error: 'Patient email changed; review again' });
+          if (claimed === 'recipient_changed') return result(409, { error: 'Prescription email already requested' });
+          if (claimed === 'accepted') return result(200, { status: 'accepted', recipientMasked });
+          if (claimed === 'pending') return result(202, { status: 'pending', recipientMasked });
+          if (claimed === 'unknown') return result(409, { status: 'unknown', recipientMasked });
+          try {
+            const messageId = await config.prescriptionEmail.send(recipient, pdf);
+            if (!messageId || messageId.length > 256) throw new Error('Invalid SES acceptance');
+            await store.markPrescriptionEmail(clinicSlug, found.appointment.id,
+              found.encounter.revision, 'accepted', now().toISOString(), messageId);
+            return result(202, { status: 'accepted', recipientMasked });
+          } catch {
+            // SES acceptance may be ambiguous after a timeout. Never automatically send again.
+            try { await store.markPrescriptionEmail(clinicSlug, found.appointment.id,
+              found.encounter.revision, 'unknown', now().toISOString()); } catch { /* claim remains pending */ }
+            return result(503, { error: 'Demo email outcome unknown; do not resend automatically' });
+          }
         }
         if (input.method === 'GET' && endpoint === 'consultations') {
           const date = singleQuery(input.queryString, 'date');

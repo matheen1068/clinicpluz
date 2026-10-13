@@ -5,6 +5,7 @@ import {
   listPatientHistory, readPatientHistory,
   type HistoryContext, type HistoryDetail, type HistoryVisit,
 } from './patientHistoryApi';
+import { medicationTimingText } from './medicationDirections';
 
 const NOTE_FIELDS = [
   { key: 'chiefComplaint', label: 'Chief complaint' },
@@ -169,7 +170,7 @@ export default function PatientHistory({ clinicSlug, appointmentId, clinicDate, 
             : <><div className="consultation-history-detail-head"><h5 ref={detailHeading} tabIndex={-1}>Finalized visit · {clinicTime(detail.visitAt)}</h5><p>Doctor: {detail.doctor.displayName} · Finalized: {clinicTime(detail.finalizedAt)}</p></div>
               <div className="consultation-history-block"><h6>Recorded vitals</h6>{detail.vitals ? <><p>Observed {clinicTime(detail.vitals.observedAt)} · recorded by {detail.vitals.recordedByDisplayName} at {clinicTime(detail.vitals.recordedAt)}</p><dl>{VITAL_FIELDS.filter(({ key }) => detail.vitals?.[key] !== undefined).map(({ key, label, unit }) => <div key={key}><dt>{label}</dt><dd>{detail.vitals?.[key]} {unit}</dd></div>)}</dl></> : <p>No vitals recorded for this visit.</p>}</div>
               <div className="consultation-history-block"><h6>Doctor’s note</h6>{NOTE_FIELDS.map(({ key, label }) => <div className="consultation-history-note" key={key}><strong>{label}</strong><p>{detail.note[key] || 'Not recorded'}</p></div>)}</div>
-              <div className="consultation-history-block"><h6>Doctor-entered prescriptions</h6>{detail.medications.length === 0 ? <p>No medicines recorded for this visit.</p> : <ol>{detail.medications.map((medicine, index) => <li key={index}><strong>{medicine.name} {medicine.strength}</strong><p>Dose: {medicine.dose} · Route: {medicine.route} · Frequency: {medicine.frequency} · Duration: {medicine.duration}</p><p>Instructions: {medicine.instructions}</p></li>)}</ol>}</div>
+              <div className="consultation-history-block"><h6>Doctor-entered prescriptions</h6>{detail.medications.length === 0 ? <p>No medicines recorded for this visit.</p> : <ol>{detail.medications.map((medicine, index) => <li key={index}><strong>{medicine.name} {medicine.strength}</strong><p>Dose: {medicine.dose} · Route: {medicine.route} · {medicationTimingText(medicine)} · Duration: {medicine.duration}</p><p>Instructions: {medicine.instructions}</p></li>)}</ol>}</div>
             </>}
         </div>
       </div>}

@@ -12,6 +12,7 @@ import {
 import { resolveClinicContext } from './tenant';
 import Workflow from './Workflow';
 import Consultation from './Consultation';
+import PrescriptionHandoff from './PrescriptionHandoff';
 
 type View =
   | { kind: 'checking' }
@@ -27,6 +28,7 @@ const ROLE_LABELS: Record<ClinicRole, string> = {
   nurse: 'Nurse',
   lab_tech: 'Lab technician',
   billing: 'Billing staff',
+  pharmacist: 'Pharmacist',
 };
 
 const clinicContext = resolveClinicContext(
@@ -179,15 +181,16 @@ function StatusCard({ kind, onRetry }: { kind: 'checking' | 'invalid-host' | 'un
 
 function SignedInShell({ bootstrap, session, onSignedOut, onUnverified }: { bootstrap: ClinicBootstrap; session: StaffSession; onSignedOut: () => void; onUnverified: () => void }) {
   const [busy, setBusy] = useState(false);
-  const [activeModule, setActiveModule] = useState<'reception' | 'consultation'>(session.user.role === 'doctor' ? 'consultation' : 'reception');
+  const [activeModule, setActiveModule] = useState<'reception' | 'consultation' | 'prescriptions'>(session.user.role === 'doctor' ? 'consultation' : session.user.role === 'pharmacist' ? 'prescriptions' : 'reception');
   const [consultationDirty, setConsultationDirty] = useState(false);
   const [consultationPending, setConsultationPending] = useState(false);
   const canReception = session.user.role === 'clinic_admin' || session.user.role === 'receptionist' || session.user.role === 'nurse';
   const canConsultation = session.user.role === 'doctor' || session.user.role === 'nurse';
+  const canPrescriptions = session.user.role === 'receptionist' || session.user.role === 'pharmacist';
 
-  useEffect(() => { setActiveModule(session.user.role === 'doctor' ? 'consultation' : 'reception'); }, [session.user.role]);
+  useEffect(() => { setActiveModule(session.user.role === 'doctor' ? 'consultation' : session.user.role === 'pharmacist' ? 'prescriptions' : 'reception'); }, [session.user.role]);
 
-  function selectModule(next: 'reception' | 'consultation') {
+  function selectModule(next: 'reception' | 'consultation' | 'prescriptions') {
     if (next === activeModule || consultationPending ||
         (activeModule === 'consultation' && consultationDirty && !window.confirm('Leave consultation with unsaved or unverified changes?'))) return;
     setActiveModule(next);
@@ -213,10 +216,11 @@ function SignedInShell({ bootstrap, session, onSignedOut, onUnverified }: { boot
   return (
     <div className="workspace-shell">
       <header className="workspace-header"><div><span className="eyebrow">CLINIC WORKSPACE</span><h2>{bootstrap.clinic.displayName}</h2><p className="workspace-subtitle">Signed in as <strong>{session.user.displayName}</strong> · {ROLE_LABELS[session.user.role]}</p></div><div className="workspace-header-actions"><span className="session-badge">● Secure session</span><button className="secondary-button" type="button" onClick={handleSignOut} disabled={busy || consultationPending}>{busy ? 'Signing out…' : consultationPending ? 'Saving…' : 'Sign out'} <ArrowIcon /></button></div></header>
-      {(canReception || canConsultation) && <nav className="workspace-nav" aria-label="Clinic modules">{canReception && <button type="button" aria-current={activeModule === 'reception' ? 'page' : undefined} disabled={consultationPending} onClick={() => selectModule('reception')}>Reception</button>}{canConsultation && <button type="button" aria-current={activeModule === 'consultation' ? 'page' : undefined} disabled={consultationPending} onClick={() => selectModule('consultation')}>Consultations</button>}</nav>}
+      {(canReception || canConsultation || canPrescriptions) && <nav className="workspace-nav" aria-label="Clinic modules">{canReception && <button type="button" aria-current={activeModule === 'reception' ? 'page' : undefined} disabled={consultationPending} onClick={() => selectModule('reception')}>Reception</button>}{canConsultation && <button type="button" aria-current={activeModule === 'consultation' ? 'page' : undefined} disabled={consultationPending} onClick={() => selectModule('consultation')}>Consultations</button>}{canPrescriptions && <button type="button" aria-current={activeModule === 'prescriptions' ? 'page' : undefined} disabled={consultationPending} onClick={() => selectModule('prescriptions')}>Prescriptions</button>}</nav>}
       {activeModule === 'reception' && canReception && <Workflow clinicSlug={session.clinicSlug} csrfToken={session.csrfToken} role={session.user.role} onSessionLost={onUnverified} />}
       {activeModule === 'consultation' && canConsultation && <Consultation clinicSlug={session.clinicSlug} csrfToken={session.csrfToken} role={session.user.role} onSessionLost={onUnverified} onDirtyChange={setConsultationDirty} onPendingChange={setConsultationPending} />}
-      {!canReception && !canConsultation && <section className="workflow-access" role="status"><h3>No clinic modules assigned</h3><p>Contact your clinic administrator for access to an enabled module.</p></section>}
+      {activeModule === 'prescriptions' && canPrescriptions && <PrescriptionHandoff clinicSlug={session.clinicSlug} csrfToken={session.csrfToken} role={session.user.role === 'pharmacist' ? 'pharmacist' : 'receptionist'} onSessionLost={onUnverified} onPendingChange={setConsultationPending} />}
+      {!canReception && !canConsultation && !canPrescriptions && <section className="workflow-access" role="status"><h3>No clinic modules assigned</h3><p>Contact your clinic administrator for access to an enabled module.</p></section>}
     </div>
   );
 }

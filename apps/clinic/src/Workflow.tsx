@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { ClinicRole } from './api';
 import {
-  createAppointment, getAppointments, getDoctors, pilotDateToday, pilotSlotToIso,
+  createAppointment, getAppointments, getDoctors, pilotDateToday, pilotSlotHasEnded, pilotSlotToIso,
   registerPatient, searchPatients, WorkflowApiError,
   type Appointment, type BookingSource, type Doctor, type Patient, type PatientSex,
 } from './workflowApi';
@@ -162,6 +162,10 @@ function WorkflowDesk({ clinicSlug, csrfToken, role, onSessionLost }: Props) {
     if (!canBook || !selectedPatient || !source || booking || queueLoading || queueError || doctorsLoading || doctorsError) return;
     const startAt = pilotSlotToIso(date, time);
     if (!startAt) { setBookingError('Choose a valid 30-minute slot in the provisional clinic schedule.'); return; }
+    if (pilotSlotHasEnded(startAt)) {
+      setBookingError('This slot has already ended. Choose a future date and time.');
+      return;
+    }
     setBooking(true);
     setBookingError('');
     setBookingSuccess('');
@@ -174,7 +178,9 @@ function WorkflowDesk({ clinicSlug, csrfToken, role, onSessionLost }: Props) {
       setQueueReload((value) => value + 1);
     } catch (error) {
       if (!handleAccessError(error)) {
-        if (error instanceof WorkflowApiError && error.status === 409) {
+        if (error instanceof WorkflowApiError && error.status === 400 && pilotSlotHasEnded(startAt)) {
+          setBookingError('This slot has already ended. Choose a future date and time.');
+        } else if (error instanceof WorkflowApiError && error.status === 409) {
           setBookingError('This doctor’s slot was just taken. Choose another 30-minute slot.');
           setQueueReload((value) => value + 1);
         } else {

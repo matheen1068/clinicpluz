@@ -41,6 +41,12 @@ test('session is absent on JSON API 401 but does not become a fake session on se
   } finally { restore(); }
 });
 
+test('a server-confirmed pharmacist session is accepted without assigning a clinical authoring role', async () => {
+  const restore = mockFetch(async () => Response.json({ ...session, user: { ...session.user, role: 'pharmacist' } }));
+  try { assert.equal((await getStaffSession('goodwell')).user.role, 'pharmacist'); }
+  finally { restore(); }
+});
+
 test('an S3-style error means the API is unavailable, while JSON clinic rejection remains explicit', async () => {
   let restore = mockFetch(async () => new Response('<Error>AccessDenied</Error>', {
     status: 403, headers: { 'Content-Type': 'application/xml' },
