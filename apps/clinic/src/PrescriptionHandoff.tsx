@@ -25,6 +25,7 @@ export default function PrescriptionHandoff({ clinicSlug, csrfToken, role, onSes
   const [items, setItems] = useState<PrescriptionQueueItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [listError, setListError] = useState('');
+  const [refreshError, setRefreshError] = useState(false);
   const [reload, setReload] = useState(0);
   const [selected, setSelected] = useState<PrescriptionQueueItem | null>(null);
   const [prescription, setPrescription] = useState<PrintablePrescription | null>(null);
@@ -57,7 +58,7 @@ export default function PrescriptionHandoff({ clinicSlug, csrfToken, role, onSes
     const controller = new AbortController();
     detailController.current?.abort();
     setItems([]); setSelected(null); setPrescription(null); setDetailError('');
-    setAccessDenied(false); setListError(''); setLoading(true); setDetailLoading(false);
+    setAccessDenied(false); setListError(''); setRefreshError(false); setLoading(true); setDetailLoading(false);
     void listFinalizedPrescriptions(clinicSlug, date, controller.signal).then((value) => {
       if (!controller.signal.aborted) setItems(value);
     }).catch((error: unknown) => {
@@ -66,6 +67,28 @@ export default function PrescriptionHandoff({ clinicSlug, csrfToken, role, onSes
     return () => controller.abort();
   }, [clinicSlug, date, reload]);
   useEffect(() => () => detailController.current?.abort(), []);
+
+  useEffect(() => {
+    if (loading || listError || accessDenied || emailSending) return;
+    const controller = new AbortController();
+    let inFlight = false;
+    function refreshVisibleList() {
+      if (document.visibilityState !== 'visible' || inFlight) return;
+      inFlight = true;
+      void listFinalizedPrescriptions(clinicSlug, date, controller.signal).then((value) => {
+        if (!controller.signal.aborted) { setItems(value); setRefreshError(false); }
+      }).catch((error: unknown) => {
+        if (!controller.signal.aborted && !handleAccessError(error)) setRefreshError(true);
+      }).finally(() => { inFlight = false; });
+    }
+    const interval = window.setInterval(refreshVisibleList, 60_000);
+    document.addEventListener('visibilitychange', refreshVisibleList);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', refreshVisibleList);
+      controller.abort();
+    };
+  }, [clinicSlug, date, loading, listError, accessDenied, emailSending]);
 
   function clearSelection() {
     detailController.current?.abort();
@@ -109,6 +132,8 @@ export default function PrescriptionHandoff({ clinicSlug, csrfToken, role, onSes
     <p className="workflow-notice">Read-only medicine handoff. Reception controls bookings; only the assigned doctor edits or finalizes a prescription. Do not use real patient data in staging.</p>
     <section className="workflow-card" aria-labelledby="handoff-heading">
       <div className="workflow-card-head prescription-handoff-head"><div><span className="workflow-step">RX</span><h4 id="handoff-heading">Finalized medicine orders</h4></div><div className="consultation-queue-controls"><label>Clinic date<input type="date" value={date} onChange={(event) => changeDate(event.target.value)} disabled={emailSending} /></label><button type="button" className="workflow-link" onClick={refreshList} disabled={loading || emailSending}>Refresh list</button></div></div>
+      <p className="workflow-muted">New finalized orders appear automatically while this page is open and visible, usually within a minute.</p>
+      {refreshError && <p role="status" className="workflow-error">Could not refresh the list just now. Showing the last loaded result; use Refresh list to retry.</p>}
       {loading ? <p role="status" className="workflow-muted">Loading finalized prescriptions…</p>
         : listError ? <div role="alert" className="workflow-error"><p>{listError}</p><button type="button" className="workflow-link" onClick={refreshList}>Retry list</button></div>
         : items.length === 0 ? <p role="status" className="workflow-empty">No finalized prescriptions with medicines are recorded for {date}.</p>
