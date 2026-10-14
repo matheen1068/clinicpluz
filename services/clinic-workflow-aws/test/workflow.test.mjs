@@ -741,7 +741,7 @@ test('doctor-entered structured timing can replace frequency while legacy record
     { ...conflicting, expectedRevision: 1 }, doctorSession)).status, 400);
 });
 
-test('reception and pharmacy can see only finalized prescription handoff, never notes, vitals, or drafts', async () => {
+test('reception, clinic admin, and pharmacy can see only finalized prescription handoff', async () => {
   const world = setup();
   const patientId = (await world.call('POST', `${ROOT}/goodwell/patients`, patient)).body.patient.id;
   const withRx = await bookFor(world, patientId, 'd1', '2026-10-10T10:00:00+05:30');
@@ -783,7 +783,18 @@ test('reception and pharmacy can see only finalized prescription handoff, never 
     { ...doctorSession, queryString: 'date=2026-10-10' })).status, 403);
   assert.equal((await world.call('POST', detailPath, withRx, nurseSession)).status, 403);
   world.members.get('goodwell/reception').role = 'clinic_admin';
-  assert.equal((await world.call('POST', detailPath, withRx)).status, 403);
+  const adminQueue = await world.call('GET', queuePath, undefined, { queryString: 'date=2026-10-10' });
+  assert.equal(adminQueue.status, 200);
+  assert.deepEqual(adminQueue.body.items.map((item) => item.appointmentId), [withRx.appointmentId]);
+  const adminDetail = await world.call('POST', detailPath, withRx);
+  assert.equal(adminDetail.status, 200);
+  assert.equal(adminDetail.body.printablePrescription.patient.phone, undefined);
+  assert.equal(adminDetail.body.printablePrescription.patient.email, undefined);
+  assert.equal(adminDetail.body.encounter, undefined);
+  assert.equal((await world.call('POST', detailPath, draftOnly)).status, 404);
+  assert.equal((await world.call('POST', `${consultationBase}/read`, withRx)).status, 403);
+  assert.equal((await world.call('POST', `${consultationBase}/draft`,
+    { ...withRx, expectedRevision: 2, note, medications })).status, 403);
 });
 
 test('prescription handoff checks session, clinic, entitlement, CSRF and canonical record linkage', async () => {
@@ -837,6 +848,10 @@ test('demo email is disabled by default and preview requires reception and a fin
   assert.equal(preview.body.recipientEmail, patient.email);
   assert.equal(preview.body.recipientMasked, 'a***@example.test');
   assert.equal(preview.headers['cache-control'], 'no-store');
+  enabled.members.get('goodwell/reception').role = 'clinic_admin';
+  const adminPreview = await enabled.call('POST', previewPath, draft);
+  assert.equal(adminPreview.status, 200);
+  assert.equal(adminPreview.body.recipientEmail, patient.email);
   assert.equal(enabled.deliveries.size, 0);
 });
 

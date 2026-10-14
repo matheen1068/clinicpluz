@@ -67,7 +67,8 @@ export interface PrescriptionEmailConfig {
 export interface Config { publicOrigin: string; edgeKey: string; now?: () => Date; prescriptionEmail?: PrescriptionEmailConfig }
 
 const ROLES = new Set<Role>(['clinic_admin', 'doctor', 'receptionist', 'nurse', 'lab_tech', 'billing', 'pharmacist']);
-const PRESCRIPTION_ROLES = new Set<Role>(['receptionist', 'pharmacist']);
+const PRESCRIPTION_ROLES = new Set<Role>(['clinic_admin', 'receptionist', 'pharmacist']);
+const PRESCRIPTION_EMAIL_ROLES = new Set<Role>(['clinic_admin', 'receptionist']);
 const VIEW_ROLES = new Set<Role>(['clinic_admin', 'receptionist', 'nurse']);
 const WRITE_ROLES = new Set<Role>(['clinic_admin', 'receptionist', 'nurse']);
 const RESERVED = new Set(['admin', 'api', 'app', 'control', 'controlpanel', 'staging', 'www']);
@@ -308,7 +309,7 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
         const module = isConsultation ? 'consultations' : endpoint.startsWith('patients') ? 'patient_intake' : 'appointments';
         if (!modules || modules.clinicSlug !== clinicSlug || modules[module] !== true) return result(403, { error: 'Module unavailable' });
         if (isConsultation) {
-          if (isPrescriptionEmail ? member.role !== 'receptionist' :
+          if (isPrescriptionEmail ? !PRESCRIPTION_EMAIL_ROLES.has(member.role) :
               isPrescriptionHandoff ? !PRESCRIPTION_ROLES.has(member.role) :
                 member.role !== 'nurse' && member.role !== 'doctor') return result(403, { error: 'Role not allowed' });
           if ((endpoint === 'consultations/draft' || endpoint === 'consultations/finalize' ||

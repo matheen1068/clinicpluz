@@ -9,7 +9,7 @@ import { pilotDateToday } from './workflowApi';
 interface Props {
   clinicSlug: string;
   csrfToken: string;
-  role: 'receptionist' | 'pharmacist';
+  role: 'clinic_admin' | 'receptionist' | 'pharmacist';
   onSessionLost: () => void;
   onPendingChange?: (pending: boolean) => void;
 }
@@ -150,7 +150,7 @@ export default function PrescriptionHandoff({ clinicSlug, csrfToken, role, onSes
               : <><div className="prescription-handoff-person"><span className="eyebrow">SERVER-CONFIRMED FINAL</span><h5>{prescription.patient.fullName}</h5><p>{prescription.patient.ageYears} years at registration · {prescription.patient.sex}</p><p>Doctor: {prescription.doctor.displayName} · Finalized: {clinicTime(prescription.finalizedAt)}</p></div>
                 <h6>Doctor-entered medicines</h6><ol>{prescription.medications.map((medicine, index) => <li key={index}><strong>{medicine.name} {medicine.strength}</strong><p>Dose: {medicine.dose} · Route: {medicine.route}</p><p>{medicationTimingText(medicine)} · Duration: {medicine.duration}</p><p>Instructions: {medicine.instructions}</p></li>)}</ol>
                 <button type="button" className="workflow-action prescription-handoff-print" onClick={() => window.print()}>Print finalized prescription</button>
-                {role === 'receptionist' && <PrescriptionEmail key={`${selected.appointmentId}:${selected.clinicDate}:${selected.finalizedAt}`} clinicSlug={clinicSlug} csrfToken={csrfToken} selection={selected} onAccessError={handleAccessError} onSendingChange={setEmailSending} />}
+                {role !== 'pharmacist' && <PrescriptionEmail key={`${selected.appointmentId}:${selected.clinicDate}:${selected.finalizedAt}`} clinicSlug={clinicSlug} csrfToken={csrfToken} selection={selected} onAccessError={handleAccessError} onSendingChange={setEmailSending} />}
               </>}
           </div>
         </div>}

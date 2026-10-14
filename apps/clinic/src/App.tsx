@@ -186,7 +186,7 @@ function SignedInShell({ bootstrap, session, onSignedOut, onUnverified }: { boot
   const [consultationPending, setConsultationPending] = useState(false);
   const canReception = session.user.role === 'clinic_admin' || session.user.role === 'receptionist' || session.user.role === 'nurse';
   const canConsultation = session.user.role === 'doctor' || session.user.role === 'nurse';
-  const canPrescriptions = session.user.role === 'receptionist' || session.user.role === 'pharmacist';
+  const canPrescriptions = session.user.role === 'clinic_admin' || session.user.role === 'receptionist' || session.user.role === 'pharmacist';
 
   useEffect(() => { setActiveModule(session.user.role === 'doctor' ? 'consultation' : session.user.role === 'pharmacist' ? 'prescriptions' : 'reception'); }, [session.user.role]);
 
@@ -219,7 +219,7 @@ function SignedInShell({ bootstrap, session, onSignedOut, onUnverified }: { boot
       {(canReception || canConsultation || canPrescriptions) && <nav className="workspace-nav" aria-label="Clinic modules">{canReception && <button type="button" aria-current={activeModule === 'reception' ? 'page' : undefined} disabled={consultationPending} onClick={() => selectModule('reception')}>Reception</button>}{canConsultation && <button type="button" aria-current={activeModule === 'consultation' ? 'page' : undefined} disabled={consultationPending} onClick={() => selectModule('consultation')}>Consultations</button>}{canPrescriptions && <button type="button" aria-current={activeModule === 'prescriptions' ? 'page' : undefined} disabled={consultationPending} onClick={() => selectModule('prescriptions')}>Prescriptions</button>}</nav>}
       {activeModule === 'reception' && canReception && <Workflow clinicSlug={session.clinicSlug} csrfToken={session.csrfToken} role={session.user.role} onSessionLost={onUnverified} />}
       {activeModule === 'consultation' && canConsultation && <Consultation clinicSlug={session.clinicSlug} csrfToken={session.csrfToken} role={session.user.role} onSessionLost={onUnverified} onDirtyChange={setConsultationDirty} onPendingChange={setConsultationPending} />}
-      {activeModule === 'prescriptions' && canPrescriptions && <PrescriptionHandoff clinicSlug={session.clinicSlug} csrfToken={session.csrfToken} role={session.user.role === 'pharmacist' ? 'pharmacist' : 'receptionist'} onSessionLost={onUnverified} onPendingChange={setConsultationPending} />}
+      {activeModule === 'prescriptions' && canPrescriptions && <PrescriptionHandoff clinicSlug={session.clinicSlug} csrfToken={session.csrfToken} role={session.user.role === 'pharmacist' ? 'pharmacist' : session.user.role === 'clinic_admin' ? 'clinic_admin' : 'receptionist'} onSessionLost={onUnverified} onPendingChange={setConsultationPending} />}
       {!canReception && !canConsultation && !canPrescriptions && <section className="workflow-access" role="status"><h3>No clinic modules assigned</h3><p>Contact your clinic administrator for access to an enabled module.</p></section>}
     </div>
   );
