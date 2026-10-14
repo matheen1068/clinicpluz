@@ -70,6 +70,9 @@ function path(slug: string, suffix: string): string {
 function selection(value: EpisodeSelection): void {
   if (!id(value.appointmentId) || !date(value.clinicDate)) throw new BillingApiError(null, 'Invalid appointment selection');
 }
+function selectionBody(value: EpisodeSelection): EpisodeSelection {
+  return { appointmentId: value.appointmentId, clinicDate: value.clinicDate };
+}
 function csrf(value: string): HeadersInit {
   if (!text(value)) throw new BillingApiError(null, 'Missing authenticated CSRF token');
   return { 'Content-Type': 'application/json', 'X-CSRF-Token': value };
@@ -143,14 +146,14 @@ export async function getBillingConfig(slug: string, signal?: AbortSignal): Prom
 export async function checkInAppointment(slug: string, selected: EpisodeSelection, expectedFeePaise: number, operationId: string, csrfToken: string): Promise<Episode> {
   selection(selected);
   if (!money(expectedFeePaise) || !uuid(operationId)) throw new BillingApiError(null, 'Invalid check-in request');
-  const value = await post(slug, 'appointments/check-in', { ...selected, expectedFeePaise, operationId }, csrfToken);
+  const value = await post(slug, 'appointments/check-in', { ...selectionBody(selected), expectedFeePaise, operationId }, csrfToken);
   if (!isRecord(value) || !isRecord(value.appointment) || value.appointment.id !== selected.appointmentId || value.appointment.status !== 'checked_in') invalid('check-in');
   return matchingEpisode(value.episode, selected);
 }
 export async function addLegacyConsultationCharge(slug: string, selected: EpisodeSelection, expectedFeePaise: number, operationId: string, csrfToken: string): Promise<Episode> {
   selection(selected);
   if (!money(expectedFeePaise) || !uuid(operationId)) throw new BillingApiError(null, 'Invalid consultation charge request');
-  const value = await post(slug, 'billing/consultation-charge', { ...selected, expectedFeePaise, operationId, reason: 'legacy_check_in_missing' }, csrfToken);
+  const value = await post(slug, 'billing/consultation-charge', { ...selectionBody(selected), expectedFeePaise, operationId, reason: 'legacy_check_in_missing' }, csrfToken);
   if (!isRecord(value)) invalid('consultation charge');
   return matchingEpisode(value.episode, selected);
 }
@@ -164,7 +167,7 @@ export async function listBillingEpisodes(slug: string, clinicDate: string, sign
 }
 export async function readBillingEpisode(slug: string, selected: EpisodeSelection, csrfToken: string, signal?: AbortSignal): Promise<EpisodeDetail> {
   selection(selected);
-  const value = await post(slug, 'billing/read', selected, csrfToken, signal);
+  const value = await post(slug, 'billing/read', selectionBody(selected), csrfToken, signal);
   if (!isRecord(value) || !Array.isArray(value.charges) || !Array.isArray(value.payments)) invalid('billing detail');
   const episode = matchingEpisode(value.episode, selected);
   const receipt = value.receipt === null ? null : parseReceipt(value.receipt, slug, episode);
@@ -174,21 +177,21 @@ export async function readBillingEpisode(slug: string, selected: EpisodeSelectio
 export async function recordPayment(slug: string, selected: EpisodeSelection, expectedRevision: number, amountPaise: number, method: PaymentMethod, reference: string, operationId: string, csrfToken: string): Promise<{ episode: Episode; payment: Payment }> {
   selection(selected);
   if (!count(expectedRevision) || !money(amountPaise) || amountPaise === 0 || !methods.has(method) || !uuid(operationId)) throw new BillingApiError(null, 'Invalid payment request');
-  const value = await post(slug, 'billing/payments', { ...selected, operationId, expectedRevision, amountPaise, method, ...(reference.trim() ? { reference: reference.trim() } : {}) }, csrfToken);
+  const value = await post(slug, 'billing/payments', { ...selectionBody(selected), operationId, expectedRevision, amountPaise, method, ...(reference.trim() ? { reference: reference.trim() } : {}) }, csrfToken);
   if (!isRecord(value)) invalid('payment');
   return { episode: matchingEpisode(value.episode, selected), payment: parsePayment(value.payment) };
 }
 export async function issueReceipt(slug: string, selected: EpisodeSelection, expectedRevision: number, operationId: string, csrfToken: string): Promise<{ episode: Episode; receipt: Receipt }> {
   selection(selected);
   if (!count(expectedRevision) || !uuid(operationId)) throw new BillingApiError(null, 'Invalid receipt request');
-  const value = await post(slug, 'billing/receipt', { ...selected, operationId, expectedRevision }, csrfToken);
+  const value = await post(slug, 'billing/receipt', { ...selectionBody(selected), operationId, expectedRevision }, csrfToken);
   if (!isRecord(value)) invalid('receipt');
   const episode = matchingEpisode(value.episode, selected);
   return { episode, receipt: parseReceipt(value.receipt, slug, episode) };
 }
 export async function readFulfillment(slug: string, selected: EpisodeSelection, csrfToken: string, signal?: AbortSignal): Promise<FulfillmentDetail> {
   selection(selected);
-  const value = await post(slug, 'billing/fulfillment/read', selected, csrfToken, signal);
+  const value = await post(slug, 'billing/fulfillment/read', selectionBody(selected), csrfToken, signal);
   if (!isRecord(value) || value.appointmentId !== selected.appointmentId || value.clinicDate !== selected.clinicDate ||
       !isRecord(value.patient) || !id(value.patient.id) || !text(value.patient.fullName) ||
       !count(value.prescriptionRevision) || !Array.isArray(value.items) || value.items.length > 20) invalid('pharmacy fulfillment');
@@ -217,7 +220,7 @@ export async function recordFulfillment(slug: string, selected: EpisodeSelection
         !quantityUnits.has(item.quantityUnit) || !money(item.unitPricePaise) || item.unitPricePaise > 10_000_000 ||
         item.quantity * item.unitPricePaise > 100_000_000 ||
         (item.status !== 'partly_supplied' && item.status !== 'supplied'))) throw new BillingApiError(null, 'Invalid fulfillment request');
-  const value = await post(slug, 'billing/fulfillment', { ...selected, operationId, expectedRevision, prescriptionRevision, items, closeForCheckout }, csrfToken);
+  const value = await post(slug, 'billing/fulfillment', { ...selectionBody(selected), operationId, expectedRevision, prescriptionRevision, items, closeForCheckout }, csrfToken);
   if (!isRecord(value)) invalid('fulfillment');
   return matchingEpisode(value.episode, selected);
 }

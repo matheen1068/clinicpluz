@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  BillingApiError, checkInAppointment, getBillingConfig, issueReceipt, listBillingEpisodes,
-  readBillingEpisode, readFulfillment, recordFulfillment, recordPayment,
+  addLegacyConsultationCharge, BillingApiError, checkInAppointment, getBillingConfig,
+  issueReceipt, listBillingEpisodes, readBillingEpisode, readFulfillment, recordFulfillment, recordPayment,
 } from './billingApi.ts';
 
 const date = '2026-10-15';
@@ -88,4 +88,44 @@ test('stale billing conflict is surfaced and HTML fallback fails closed', async 
   globalThis.fetch = async () => new Response('<html>error</html>', { status: 404, headers: { 'Content-Type': 'text/html' } });
   await assert.rejects(() => listBillingEpisodes('goodwell', date),
     (error) => error instanceof BillingApiError && error.status === null);
+});
+
+test('billing requests send only identity fields when given a full queue episode', async () => {
+  const calls = [];
+  mockJson(200, { episode, charges: [], payments: [], receipt: null }, calls);
+  await readBillingEpisode('goodwell', episode, 'csrf');
+  assert.deepEqual(JSON.parse(calls[0].init.body), selection);
+
+  mockJson(200, { episode }, calls);
+  await addLegacyConsultationCharge('goodwell', episode, 200000, operationId, 'csrf');
+  assert.deepEqual(JSON.parse(calls[1].init.body), {
+    ...selection, expectedFeePaise: 200000, operationId, reason: 'legacy_check_in_missing',
+  });
+
+  mockJson(200, { episode: { ...episode, paidPaise: 50000, outstandingPaise: 150000, revision: 3 },
+    payment: { ...payment, amountPaise: 50000 } }, calls);
+  await recordPayment('goodwell', episode, 2, 50000, 'upi', '', operationId, 'csrf');
+  assert.deepEqual(JSON.parse(calls[2].init.body), {
+    ...selection, operationId, expectedRevision: 2, amountPaise: 50000, method: 'upi',
+  });
+
+  mockJson(200, { episode: paid, receipt }, calls);
+  await issueReceipt('goodwell', episode, 5, operationId, 'csrf');
+  assert.deepEqual(JSON.parse(calls[3].init.body), { ...selection, operationId, expectedRevision: 5 });
+
+  const item = { prescriptionIndex: 0, name: 'Synthetic medicine', strength: '5 mg', suppliedQuantity: 0,
+    quantityUnit: null, status: 'not_supplied', supplies: [], remainingQuantity: null };
+  mockJson(200, { ...selection, patient: { id: 'patient_1', fullName: 'Synthetic Patient' },
+    prescriptionRevision: 3, items: [item], episode: { ...episode, revision: 0 } }, calls);
+  await readFulfillment('goodwell', episode, 'csrf');
+  assert.deepEqual(JSON.parse(calls[4].init.body), selection);
+
+  mockJson(200, { episode }, calls);
+  await recordFulfillment('goodwell', episode, 2, 3, [{ prescriptionIndex: 0, quantity: 1,
+    quantityUnit: 'tablet', unitPricePaise: 1000, status: 'supplied' }], true, operationId, 'csrf');
+  assert.deepEqual(JSON.parse(calls[5].init.body), {
+    ...selection, operationId, expectedRevision: 2, prescriptionRevision: 3,
+    items: [{ prescriptionIndex: 0, quantity: 1, quantityUnit: 'tablet', unitPricePaise: 1000, status: 'supplied' }],
+    closeForCheckout: true,
+  });
 });
