@@ -4,6 +4,7 @@ import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-sec
 import { SESv2Client, SendEmailCommand } from '@aws-sdk/client-sesv2';
 import { createWorkflowApp } from './src/core.js';
 import { CognitoStaffStatus, DynamoAuthStore, DynamoWorkflowStore } from './src/aws.js';
+import { DynamoBillingStore } from './src/billing-aws.js';
 import { fromHttpApiEvent, invalidHttpApiEvent, type HttpApiEvent } from './src/http-api.js';
 
 function required(name: string): string {
@@ -47,6 +48,7 @@ async function initialize() {
         },
       } } : {}),
     },
+    new DynamoBillingStore(db, required('CLINICAL_TABLE')),
   );
 }
 

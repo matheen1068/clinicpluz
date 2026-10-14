@@ -3,6 +3,8 @@ import { EMPTY_NOTE, medicationForDisplay, parseMedications, parseNote, parseVit
   type Encounter } from './consultation.ts';
 import { historyIdFor, validHistoryId, type HistoryEntry } from './history.ts';
 import { renderPrescriptionPdf, UnsupportedPrescriptionText } from './prescription-pdf.ts';
+import { handleBilling } from './billing-routes.ts';
+import type { BillingStore } from './billing.ts';
 
 export type Role = 'clinic_admin' | 'doctor' | 'receptionist' | 'nurse' | 'lab_tech' | 'billing' | 'pharmacist';
 export type Sex = 'female' | 'male' | 'other' | 'undisclosed';
@@ -11,7 +13,7 @@ export type AppointmentStatus = 'booked' | 'checked_in';
 export interface Session { clinicSlug: string; username: string; sub: string; csrfToken: string; expiresAt: number }
 export interface Clinic { slug: string; active: boolean; displayName?: string }
 export interface Membership { clinicSlug: string; username: string; cognitoUsername: string; sub: string; role: Role; active: boolean; displayName?: string }
-export interface Entitlements { clinicSlug: string; patient_intake: boolean; appointments: boolean; consultations: boolean }
+export interface Entitlements { clinicSlug: string; patient_intake: boolean; appointments: boolean; consultations: boolean; billing?: boolean }
 export interface Doctor { id: string; displayName: string; active: boolean; staffSub?: string }
 export interface MedicineCatalogItem { id: string; name: string; strength: string; active: boolean; favorite: boolean }
 export interface Schedule { timezone: string; openMinute: number; closeMinute: number; slotMinutes: number }
@@ -267,7 +269,8 @@ function historyMatchesEncounter(entry: HistoryEntry, encounter: Encounter | nul
     encounter.finalizedByDisplayName === entry.doctor.displayName);
 }
 
-export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, store: WorkflowStore, config: Config) {
+export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, store: WorkflowStore, config: Config,
+  billing?: BillingStore) {
   const origin = new URL(config.publicOrigin);
   if (origin.protocol !== 'https:' || origin.origin !== config.publicOrigin ||
       !/^[a-z0-9-]+\.cloudfront\.net$/.test(origin.hostname) || config.edgeKey.length < 32) {
@@ -284,7 +287,7 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
       try {
         if (!safeEqual(input.headers['x-clinicpluz-edge-key'] ?? '', config.edgeKey)) return result(403, { error: 'Forbidden' });
         if (input.headers.origin && input.headers.origin !== config.publicOrigin) return result(403, { error: 'Origin rejected' });
-        const match = /^\/api\/workflow\/clinics\/([a-z0-9-]+)\/(doctors|patients(?:\/search)?|appointments|consultations(?:\/(?:read|vitals|draft|finalize|medicines\/search|history\/(?:list|detail)|prescriptions(?:\/read|\/email(?:\/preview)?)?))?)$/.exec(input.path);
+        const match = /^\/api\/workflow\/clinics\/([a-z0-9-]+)\/(doctors|patients(?:\/search)?|appointments(?:\/check-in)?|billing\/(?:config|episodes|read|consultation-charge|fulfillment(?:\/read)?|payments|receipt)|consultations(?:\/(?:read|vitals|draft|finalize|medicines\/search|history\/(?:list|detail)|prescriptions(?:\/read|\/email(?:\/preview)?)?))?)$/.exec(input.path);
         if (!match || !slug(match[1])) return result(404, { error: 'Not found' });
         const clinicSlug = match[1];
         const endpoint = match[2];
@@ -306,9 +309,18 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
           endpoint === 'consultations/prescriptions/read';
         const isPrescriptionEmail = endpoint === 'consultations/prescriptions/email' ||
           endpoint === 'consultations/prescriptions/email/preview';
-        const module = isConsultation ? 'consultations' : endpoint.startsWith('patients') ? 'patient_intake' : 'appointments';
+        const isBilling = endpoint.startsWith('billing/') || endpoint === 'appointments/check-in';
+        const module = isBilling ? 'billing' : isConsultation ? 'consultations' : endpoint.startsWith('patients') ? 'patient_intake' : 'appointments';
         if (!modules || modules.clinicSlug !== clinicSlug || modules[module] !== true) return result(403, { error: 'Module unavailable' });
-        if (isConsultation) {
+        if (isBilling) {
+          if (endpoint.startsWith('billing/fulfillment') ? member.role !== 'pharmacist' :
+              member.role !== 'clinic_admin' && member.role !== 'receptionist') {
+            return result(403, { error: 'Role not allowed' });
+          }
+          if (endpoint.startsWith('billing/fulfillment') && modules.consultations !== true) {
+            return result(403, { error: 'Module unavailable' });
+          }
+        } else if (isConsultation) {
           if (isPrescriptionEmail ? !PRESCRIPTION_EMAIL_ROLES.has(member.role) :
               isPrescriptionHandoff ? !PRESCRIPTION_ROLES.has(member.role) :
                 member.role !== 'nurse' && member.role !== 'doctor') return result(403, { error: 'Role not allowed' });
@@ -328,6 +340,8 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
             (endpoint === 'consultations/prescriptions' ? input.method !== 'GET' : input.method !== 'POST')) {
           return result(404, { error: 'Not found' });
         }
+
+        if (isBilling) return handleBilling(input, endpoint, clinicSlug, clinic, member, store, billing, now());
 
         if (input.method === 'GET' && endpoint === 'doctors' && !(input.queryString ?? '')) {
           const doctors = await store.listDoctors(clinicSlug);

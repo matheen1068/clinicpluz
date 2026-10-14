@@ -3,6 +3,9 @@ import { ConsultationApiError, type PrintablePrescription } from './consultation
 import { medicationTimingText } from './medicationDirections';
 import PrescriptionPrint from './PrescriptionPrint';
 import PrescriptionEmail from './PrescriptionEmail';
+import PharmacyFulfillment from './PharmacyFulfillment';
+import PharmacyHandoverPrint from './PharmacyHandoverPrint';
+import type { FulfillmentDetail } from './billingApi';
 import { listFinalizedPrescriptions, readFinalizedPrescription, type PrescriptionQueueItem } from './prescriptionApi';
 import { pilotDateToday } from './workflowApi';
 
@@ -33,21 +36,44 @@ export default function PrescriptionHandoff({ clinicSlug, csrfToken, role, onSes
   const [detailError, setDetailError] = useState('');
   const [accessDenied, setAccessDenied] = useState(false);
   const [emailSending, setEmailSending] = useState(false);
+  const [fulfillmentPending, setFulfillmentPending] = useState(false);
+  const [printSlip, setPrintSlip] = useState<FulfillmentDetail | null>(null);
   const detailController = useRef<AbortController | null>(null);
   const sessionLostRef = useRef(onSessionLost);
   useEffect(() => { sessionLostRef.current = onSessionLost; }, [onSessionLost]);
-  useEffect(() => { onPendingChange?.(emailSending); }, [emailSending, onPendingChange]);
+  useEffect(() => { onPendingChange?.(emailSending || fulfillmentPending || !!printSlip); }, [emailSending, fulfillmentPending, printSlip, onPendingChange]);
   useEffect(() => () => onPendingChange?.(false), [onPendingChange]);
+
+  useEffect(() => {
+    if (!printSlip) return;
+    const afterPrint = () => setPrintSlip(null);
+    window.addEventListener('afterprint', afterPrint);
+    let active = true;
+    let nextFrame: number | null = null;
+    const frame = window.requestAnimationFrame(() => {
+      nextFrame = window.requestAnimationFrame(() => {
+        if (!active) return;
+        try { window.print(); }
+        catch { setPrintSlip(null); }
+      });
+    });
+    return () => {
+      active = false;
+      window.cancelAnimationFrame(frame);
+      if (nextFrame !== null) window.cancelAnimationFrame(nextFrame);
+      window.removeEventListener('afterprint', afterPrint);
+    };
+  }, [printSlip]);
 
   function handleAccessError(error: unknown): boolean {
     if (!(error instanceof ConsultationApiError)) return false;
     if (error.status === 401) {
-      detailController.current?.abort(); setItems([]); setSelected(null); setPrescription(null);
+      detailController.current?.abort(); setItems([]); setSelected(null); setPrescription(null); setPrintSlip(null);
       sessionLostRef.current();
       return true;
     }
     if (error.status === 403) {
-      detailController.current?.abort(); setItems([]); setSelected(null); setPrescription(null);
+      detailController.current?.abort(); setItems([]); setSelected(null); setPrescription(null); setPrintSlip(null);
       setAccessDenied(true);
       return true;
     }
@@ -69,7 +95,7 @@ export default function PrescriptionHandoff({ clinicSlug, csrfToken, role, onSes
   useEffect(() => () => detailController.current?.abort(), []);
 
   useEffect(() => {
-    if (loading || listError || accessDenied || emailSending) return;
+    if (loading || listError || accessDenied || emailSending || fulfillmentPending) return;
     const controller = new AbortController();
     let inFlight = false;
     function refreshVisibleList() {
@@ -88,31 +114,31 @@ export default function PrescriptionHandoff({ clinicSlug, csrfToken, role, onSes
       document.removeEventListener('visibilitychange', refreshVisibleList);
       controller.abort();
     };
-  }, [clinicSlug, date, loading, listError, accessDenied, emailSending]);
+  }, [clinicSlug, date, loading, listError, accessDenied, emailSending, fulfillmentPending]);
 
   function clearSelection() {
     detailController.current?.abort();
-    setSelected(null); setPrescription(null); setDetailError(''); setDetailLoading(false);
+    setSelected(null); setPrescription(null); setPrintSlip(null); setDetailError(''); setDetailLoading(false);
   }
   function refreshList() {
-    if (emailSending) return;
+    if (emailSending || fulfillmentPending || printSlip) return;
     clearSelection();
     setItems([]);
     setReload((value) => value + 1);
   }
   function changeDate(nextDate: string) {
-    if (nextDate === date || emailSending) return;
+    if (nextDate === date || emailSending || fulfillmentPending || printSlip) return;
     clearSelection();
     setItems([]);
     setDate(nextDate);
   }
 
   async function openPrescription(item: PrescriptionQueueItem) {
-    if (emailSending) return;
+    if (emailSending || fulfillmentPending || printSlip) return;
     detailController.current?.abort();
     const controller = new AbortController();
     detailController.current = controller;
-    setSelected(item); setPrescription(null); setDetailError(''); setDetailLoading(true);
+    setSelected(item); setPrescription(null); setPrintSlip(null); setDetailError(''); setDetailLoading(true);
     try {
       const value = await readFinalizedPrescription(clinicSlug, item, csrfToken, controller.signal);
       if (!controller.signal.aborted) setPrescription(value);
@@ -127,11 +153,11 @@ export default function PrescriptionHandoff({ clinicSlug, csrfToken, role, onSes
 
   if (accessDenied) return <section className="workflow-access" role="alert"><h3>Prescription handoff unavailable</h3><p>This clinic or staff role does not have access to finalized medicine orders.</p></section>;
 
-  return <div className="prescription-handoff">
+  return <div className="prescription-handoff" data-print-view={printSlip ? 'pharmacy-slip' : 'prescription'}>
     <div className="workflow-intro"><div><span className="eyebrow">CLINIC HANDOFF</span><h3>{role === 'pharmacist' ? 'Pharmacy medicine orders' : 'Finalized prescriptions'}</h3><p>View doctor-finalized medicines for the selected clinic day. Drafts and clinical notes are not shown here.</p></div><span className="workflow-pilot">Synthetic pilot only</span></div>
     <p className="workflow-notice">Read-only medicine handoff. Reception controls bookings; only the assigned doctor edits or finalizes a prescription. Do not use real patient data in staging.</p>
     <section className="workflow-card" aria-labelledby="handoff-heading">
-      <div className="workflow-card-head prescription-handoff-head"><div><span className="workflow-step">RX</span><h4 id="handoff-heading">Finalized medicine orders</h4></div><div className="consultation-queue-controls"><label>Clinic date<input type="date" value={date} onChange={(event) => changeDate(event.target.value)} disabled={emailSending} /></label><button type="button" className="workflow-link" onClick={refreshList} disabled={loading || emailSending}>Refresh list</button></div></div>
+      <div className="workflow-card-head prescription-handoff-head"><div><span className="workflow-step">RX</span><h4 id="handoff-heading">Finalized medicine orders</h4></div><div className="consultation-queue-controls"><label>Clinic date<input type="date" value={date} onChange={(event) => changeDate(event.target.value)} disabled={emailSending || fulfillmentPending || !!printSlip} /></label><button type="button" className="workflow-link" onClick={refreshList} disabled={loading || emailSending || fulfillmentPending || !!printSlip}>Refresh list</button></div></div>
       <p className="workflow-muted">New finalized orders appear automatically while this page is open and visible, usually within a minute.</p>
       {refreshError && <p role="status" className="workflow-error">Could not refresh the list just now. Showing the last loaded result; use Refresh list to retry.</p>}
       {loading ? <p role="status" className="workflow-muted">Loading finalized prescriptions…</p>
@@ -140,7 +166,7 @@ export default function PrescriptionHandoff({ clinicSlug, csrfToken, role, onSes
         : <div className="prescription-handoff-layout">
           <div className="prescription-handoff-list" aria-label="Finalized prescriptions">{items.map((item) => <button type="button" key={item.appointmentId}
             className={`prescription-handoff-item${selected?.appointmentId === item.appointmentId ? ' is-selected' : ''}`}
-            aria-pressed={selected?.appointmentId === item.appointmentId} onClick={() => void openPrescription(item)} disabled={emailSending}>
+            aria-pressed={selected?.appointmentId === item.appointmentId} onClick={() => void openPrescription(item)} disabled={emailSending || fulfillmentPending || !!printSlip}>
             <strong>{item.patientName}</strong><span>{item.doctorName} · {clinicTime(item.startAt)}</span><small>Finalized {clinicTime(item.finalizedAt)}</small>
           </button>)}</div>
           <div className="prescription-handoff-detail">
@@ -149,12 +175,14 @@ export default function PrescriptionHandoff({ clinicSlug, csrfToken, role, onSes
               : detailError || !prescription ? <div role="alert" className="workflow-error"><p>{detailError || 'The selected prescription could not be verified.'}</p><button type="button" className="workflow-link" onClick={() => void openPrescription(selected)}>Retry prescription</button></div>
               : <><div className="prescription-handoff-person"><span className="eyebrow">SERVER-CONFIRMED FINAL</span><h5>{prescription.patient.fullName}</h5><p>{prescription.patient.ageYears} years at registration · {prescription.patient.sex}</p><p>Doctor: {prescription.doctor.displayName} · Finalized: {clinicTime(prescription.finalizedAt)}</p></div>
                 <h6>Doctor-entered medicines</h6><ol>{prescription.medications.map((medicine, index) => <li key={index}><strong>{medicine.name} {medicine.strength}</strong><p>Dose: {medicine.dose} · Route: {medicine.route}</p><p>{medicationTimingText(medicine)} · Duration: {medicine.duration}</p><p>Instructions: {medicine.instructions}</p></li>)}</ol>
-                <button type="button" className="workflow-action prescription-handoff-print" onClick={() => window.print()}>Print finalized prescription</button>
+                <button type="button" className="workflow-action prescription-handoff-print" onClick={() => { setPrintSlip(null); window.requestAnimationFrame(() => window.print()); }}>Print finalized prescription</button>
                 {role !== 'pharmacist' && <PrescriptionEmail key={`${selected.appointmentId}:${selected.clinicDate}:${selected.finalizedAt}`} clinicSlug={clinicSlug} csrfToken={csrfToken} selection={selected} onAccessError={handleAccessError} onSendingChange={setEmailSending} />}
+                {role === 'pharmacist' && <PharmacyFulfillment key={`${selected.appointmentId}:${selected.clinicDate}:${selected.finalizedAt}`} clinicSlug={clinicSlug} csrfToken={csrfToken} selected={selected} prescription={prescription} onSessionLost={onSessionLost} onPendingChange={setFulfillmentPending} onPrintSlip={setPrintSlip} />}
               </>}
           </div>
         </div>}
     </section>
     {prescription && <PrescriptionPrint prescription={prescription} />}
+    {role === 'pharmacist' && prescription && printSlip && <PharmacyHandoverPrint prescription={prescription} fulfillment={printSlip} />}
   </div>;
 }

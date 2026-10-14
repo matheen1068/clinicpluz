@@ -133,7 +133,8 @@ export class DynamoAuthStore implements AuthStore {
     const map = (item.modules as { M?: Item } | undefined)?.M;
     if (!map) throw new Error('Invalid entitlements');
     return { clinicSlug: slug, patient_intake: bool(map, 'patient_intake'),
-      appointments: bool(map, 'appointments'), consultations: optionalBool(map, 'consultations') };
+      appointments: bool(map, 'appointments'), consultations: optionalBool(map, 'consultations'),
+      billing: optionalBool(map, 'billing') };
   }
 }
 

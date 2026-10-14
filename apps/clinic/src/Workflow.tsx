@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import type { ClinicRole } from './api';
+import { addLegacyConsultationCharge, BillingApiError, checkInAppointment, getBillingConfig, listBillingEpisodes, type BillingConfig, type Episode } from './billingApi';
+import { formatPaise } from './billingMoney';
 import {
   createAppointment, getAppointments, getDoctors, pilotDateToday, pilotSlotHasEnded, pilotSlotToIso,
   registerPatient, searchPatients, WorkflowApiError,
@@ -11,6 +13,7 @@ interface Props {
   csrfToken: string;
   role: ClinicRole;
   onSessionLost: () => void;
+  onPendingChange?: (pending: boolean) => void;
 }
 
 const CAN_BOOK = new Set<ClinicRole>(['clinic_admin', 'receptionist', 'nurse']);
@@ -36,8 +39,9 @@ function errorMessage(error: unknown, action: 'load' | 'search' | 'register' | '
   return 'The clinic workflow could not be loaded. Please retry.';
 }
 
-function WorkflowDesk({ clinicSlug, csrfToken, role, onSessionLost }: Props) {
+function WorkflowDesk({ clinicSlug, csrfToken, role, onSessionLost, onPendingChange }: Props) {
   const canBook = CAN_BOOK.has(role);
+  const canConfirmFee = role === 'clinic_admin' || role === 'receptionist';
   const [accessDenied, setAccessDenied] = useState(false);
   const [doctors, setDoctors] = useState<Doctor[]>([]);
   const [doctorsLoading, setDoctorsLoading] = useState(true);
@@ -70,6 +74,17 @@ function WorkflowDesk({ clinicSlug, csrfToken, role, onSessionLost }: Props) {
   const [bookingError, setBookingError] = useState('');
   const [bookingSuccess, setBookingSuccess] = useState('');
   const [nowMs, setNowMs] = useState(Date.now);
+  const [feeConfig, setFeeConfig] = useState<BillingConfig | null>(null);
+  const [feeConfigError, setFeeConfigError] = useState('');
+  const [billingEpisodes, setBillingEpisodes] = useState<Episode[]>([]);
+  const [billingEpisodesLoading, setBillingEpisodesLoading] = useState(false);
+  const [billingEpisodesError, setBillingEpisodesError] = useState('');
+  const [feeChoice, setFeeChoice] = useState<{ visit: Appointment; action: 'check_in' | 'add_fee' } | null>(null);
+  const [feeConfirmed, setFeeConfirmed] = useState(false);
+  const [feePending, setFeePending] = useState(false);
+  const [feeBlocked, setFeeBlocked] = useState(false);
+  const [feeError, setFeeError] = useState('');
+  const [feeSuccess, setFeeSuccess] = useState('');
 
   const slotOptions = useMemo(() => PILOT_SLOTS.map((slot) => {
     const startAt = pilotSlotToIso(date, slot);
@@ -79,6 +94,8 @@ function WorkflowDesk({ clinicSlug, csrfToken, role, onSessionLost }: Props) {
   const allSlotsEnded = slotOptions.every((option) => option.ended);
 
   useEffect(() => () => searchController.current?.abort(), []);
+  useEffect(() => { onPendingChange?.(booking || registering || feePending); }, [booking, registering, feePending, onPendingChange]);
+  useEffect(() => () => onPendingChange?.(false), [onPendingChange]);
   useEffect(() => {
     const interval = window.setInterval(() => setNowMs(Date.now()), 30_000);
     return () => window.clearInterval(interval);
@@ -122,6 +139,33 @@ function WorkflowDesk({ clinicSlug, csrfToken, role, onSessionLost }: Props) {
     }).finally(() => { if (!controller.signal.aborted) setQueueLoading(false); });
     return () => controller.abort();
   }, [clinicSlug, date, queueReload]);
+
+  useEffect(() => {
+    if (!canConfirmFee) return;
+    const controller = new AbortController();
+    setFeeConfig(null); setFeeConfigError('');
+    void getBillingConfig(clinicSlug, controller.signal).then((value) => { if (!controller.signal.aborted) setFeeConfig(value); })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return;
+        if (error instanceof BillingApiError && error.status === 401) onSessionLost();
+        else setFeeConfigError('The clinic consultation fee could not be verified. Check-in and fee confirmation are unavailable.');
+      });
+    return () => controller.abort();
+  }, [clinicSlug, canConfirmFee, queueReload]);
+
+  useEffect(() => {
+    if (!canConfirmFee) return;
+    const controller = new AbortController();
+    setBillingEpisodes([]); setBillingEpisodesError(''); setBillingEpisodesLoading(true);
+    void listBillingEpisodes(clinicSlug, date, controller.signal).then((items) => {
+      if (!controller.signal.aborted) { setBillingEpisodes(items); setFeeBlocked(false); }
+    }).catch((error: unknown) => {
+      if (controller.signal.aborted) return;
+      if (error instanceof BillingApiError && error.status === 401) onSessionLost();
+      else setBillingEpisodesError('Billing records could not be checked. Fee actions are unavailable until you refresh the queue.');
+    }).finally(() => { if (!controller.signal.aborted) setBillingEpisodesLoading(false); });
+    return () => controller.abort();
+  }, [clinicSlug, canConfirmFee, date, queueReload]);
 
   async function handleSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -190,7 +234,7 @@ function WorkflowDesk({ clinicSlug, csrfToken, role, onSessionLost }: Props) {
       const appointment = await createAppointment(clinicSlug, {
         patientId: selectedPatient.id, doctorId: selectedDoctorId, startAt, source,
       }, csrfToken);
-      setBookingSuccess(`${source === 'walk_in' ? 'Walk-in checked in' : 'Phone appointment booked'} for ${selectedPatient.fullName} at ${timeLabel(startAt)}. Server status: ${appointment.status}.`);
+      setBookingSuccess(`${source === 'walk_in' ? 'Walk-in checked in' : 'Phone appointment booked'} for ${selectedPatient.fullName} at ${timeLabel(startAt)}. Server status: ${appointment.status}.${source === 'walk_in' ? ' Reception must confirm the standard consultation fee in the date queue.' : ''}`);
       setTime('');
       setQueueReload((value) => value + 1);
     } catch (error) {
@@ -205,6 +249,35 @@ function WorkflowDesk({ clinicSlug, csrfToken, role, onSessionLost }: Props) {
         }
       }
     } finally { setBooking(false); }
+  }
+
+  function chooseFeeAction(visit: Appointment, action: 'check_in' | 'add_fee') {
+    setFeeChoice({ visit, action }); setFeeConfirmed(false); setFeeError(''); setFeeSuccess('');
+  }
+  async function confirmArrivalOrFee() {
+    if (!feeChoice || !feeConfirmed || !feeConfig || feePending || feeBlocked || billingEpisodesLoading || billingEpisodesError) return;
+    const operationId = globalThis.crypto?.randomUUID?.();
+    if (!operationId) { setFeeError('This browser cannot create a safe operation ID. No fee action was submitted.'); return; }
+    setFeePending(true); setFeeError(''); setFeeSuccess('');
+    try {
+      const selected = { appointmentId: feeChoice.visit.id, clinicDate: date };
+      if (feeChoice.action === 'check_in') await checkInAppointment(clinicSlug, selected, feeConfig.consultationFeePaise, operationId, csrfToken);
+      else await addLegacyConsultationCharge(clinicSlug, selected, feeConfig.consultationFeePaise, operationId, csrfToken);
+      setFeeSuccess(feeChoice.action === 'check_in' ? 'Arrival and one standard consultation fee were confirmed by the clinic service.' : 'One standard consultation fee was confirmed by the clinic service.');
+      setFeeChoice(null); setFeeConfirmed(false); setQueueReload((value) => value + 1);
+    } catch (error) {
+      if (error instanceof BillingApiError && error.status === 401) onSessionLost();
+      else {
+        setFeeBlocked(true); setFeeConfirmed(false);
+        setFeeError(error instanceof BillingApiError && error.status === 409
+          ? 'The visit, fee, or clinic configuration changed, or the fee was already posted. Refresh the queue and bill before another action.'
+          : error instanceof BillingApiError && error.status === 400
+            ? 'The clinic rejected this arrival or fee action. Check the visit details and refresh the queue.'
+            : error instanceof BillingApiError && error.status === 403
+              ? 'This staff account or clinic is not allowed to confirm the consultation fee.'
+              : 'The outcome could not be confirmed. Refresh the queue and Billing tab before trying again; do not repeat this action blindly.');
+      }
+    } finally { setFeePending(false); }
   }
 
   if (accessDenied) return <section className="workflow-access" role="alert"><h3>Workflow access unavailable</h3><p>Your role or this clinic’s enabled modules do not allow this workflow. Contact your clinic administrator.</p></section>;
@@ -252,8 +325,16 @@ function WorkflowDesk({ clinicSlug, csrfToken, role, onSessionLost }: Props) {
         </section>
       </div>
 
-      <section className="workflow-card workflow-queue" aria-labelledby="queue-heading"><div className="workflow-card-head workflow-queue-head"><div><span className="workflow-step">03</span><h4 id="queue-heading">Date queue</h4><p>Bookings and walk-ins recorded for this clinic day.</p></div><div className="workflow-queue-controls"><label>Date<input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label><button className="workflow-link" type="button" onClick={() => setQueueReload((value) => value + 1)} disabled={queueLoading}>Refresh queue</button></div></div>
-        {queueLoading ? <p className="workflow-muted" role="status">Loading queue…</p> : queueError ? <p className="workflow-error" role="alert">{queueError}</p> : queue.length === 0 ? <p className="workflow-empty" role="status">No visits on {date}. Bookings and walk-ins will appear here.</p> : <div className="workflow-table-wrap"><table className="workflow-table"><caption>Appointments for {date}, Asia/Kolkata</caption><thead><tr><th scope="col">Time</th><th scope="col">Patient</th><th scope="col">Doctor</th><th scope="col">Source</th><th scope="col">Status</th></tr></thead><tbody>{queue.map((visit) => <tr key={visit.id}><td>{timeLabel(visit.startAt)}</td><td>{visit.patientName}</td><td>{visit.doctorName}</td><td>{visit.source === 'walk_in' ? 'Walk-in' : 'Phone'}</td><td><span className="workflow-status">{visit.status.replaceAll('_', ' ')}</span></td></tr>)}</tbody></table></div>}
+      <section className="workflow-card workflow-queue" aria-labelledby="queue-heading"><div className="workflow-card-head workflow-queue-head"><div><span className="workflow-step">03</span><h4 id="queue-heading">Date queue</h4><p>Bookings and walk-ins recorded for this clinic day.</p></div><div className="workflow-queue-controls"><label>Date<input type="date" value={date} onChange={(event) => { setDate(event.target.value); setFeeChoice(null); setFeeConfirmed(false); }} disabled={feePending} /></label><button className="workflow-link" type="button" onClick={() => { setFeeChoice(null); setFeeConfirmed(false); setQueueReload((value) => value + 1); }} disabled={queueLoading || feePending}>Refresh queue</button></div></div>
+        {canConfirmFee && <p className="workflow-hint">{feeConfig ? `Configured consultation fee: ${formatPaise(feeConfig.consultationFeePaise)}. Confirm it once when the patient arrives.` : feeConfigError || 'Verifying clinic consultation fee…'}</p>}
+        {billingEpisodesError && <p role="alert" className="workflow-error">{billingEpisodesError}</p>}
+        {queueLoading ? <p className="workflow-muted" role="status">Loading queue…</p> : queueError ? <p className="workflow-error" role="alert">{queueError}</p> : queue.length === 0 ? <p className="workflow-empty" role="status">No visits on {date}. Bookings and walk-ins will appear here.</p> : <div className="workflow-table-wrap"><table className="workflow-table"><caption>Appointments for {date}, Asia/Kolkata</caption><thead><tr><th scope="col">Time</th><th scope="col">Patient</th><th scope="col">Doctor</th><th scope="col">Source</th><th scope="col">Status</th>{canConfirmFee && <th scope="col">Arrival and fee</th>}</tr></thead><tbody>{queue.map((visit) => {
+          const episode = billingEpisodes.find((item) => item.appointmentId === visit.id);
+          const action = episode?.consultationTotalPaise ? null : visit.status === 'booked' ? 'check_in' : visit.status === 'checked_in' ? 'add_fee' : null;
+          return <tr key={visit.id}><td>{timeLabel(visit.startAt)}</td><td>{visit.patientName}</td><td>{visit.doctorName}</td><td>{visit.source === 'walk_in' ? 'Walk-in' : 'Phone'}</td><td><span className="workflow-status">{visit.status.replaceAll('_', ' ')}</span></td>{canConfirmFee && <td>{action ? <button type="button" className="workflow-link" disabled={!feeConfig || billingEpisodesLoading || !!billingEpisodesError || feePending || feeBlocked} onClick={() => chooseFeeAction(visit, action)}>{action === 'check_in' ? 'Check in & confirm fee' : 'Confirm standard fee'}</button> : episode?.consultationTotalPaise ? 'Fee recorded' : '—'}</td>}</tr>;
+        })}</tbody></table></div>}
+        {feeChoice && canConfirmFee && <div className="workflow-fee-confirm"><h5>{feeChoice.action === 'check_in' ? 'Confirm arrival and consultation fee' : 'Confirm standard consultation fee'}</h5><p><strong>{feeChoice.visit.patientName}</strong> · {feeChoice.visit.doctorName} · {timeLabel(feeChoice.visit.startAt)}</p><p>Clinic-configured fee: <strong>{feeConfig ? formatPaise(feeConfig.consultationFeePaise) : 'Unavailable'}</strong>. This opens a bill but does not mark it paid.</p><label><input type="checkbox" checked={feeConfirmed} onChange={(event) => setFeeConfirmed(event.target.checked)} disabled={feePending || !feeConfig} /> I confirm the patient visit and standard consultation fee.</label><div className="workflow-fee-actions"><button type="button" className="workflow-action" disabled={!feeConfirmed || !feeConfig || feePending || feeBlocked || billingEpisodesLoading || !!billingEpisodesError} onClick={() => void confirmArrivalOrFee()}>{feePending ? 'Confirming…' : feeChoice.action === 'check_in' ? 'Confirm check-in and fee' : 'Add consultation fee once'}</button><button type="button" className="workflow-link" onClick={() => { setFeeChoice(null); setFeeConfirmed(false); }} disabled={feePending}>Cancel</button></div></div>}
+        {feeError && <p className="workflow-error" role="alert">{feeError}</p>}{feeSuccess && <p className="workflow-success" role="status">{feeSuccess}</p>}
       </section>
     </div>
   );

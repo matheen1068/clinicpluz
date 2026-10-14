@@ -5,8 +5,8 @@ ClinicPluz is a staff-only clinic and small-hospital product. The immediate targ
 ## Team and scope
 
 - **Coordinating chat:** works with the product owner, sets the next small milestone, reviews agent output, records decisions and blockers, and keeps the code branch coherent.
-- **Agent Green — current slice:** owns the Clinic App consultation UI in `apps/clinic` and preserves the verified clinic-specific staff login and reception workflow. Green does not implement the Control Panel or workflow backend.
-- **Agent Black — current slice:** owns consultation APIs in `services/clinic-workflow-aws` and preserves its verified reception endpoints. The separate Control Panel backend foundation is preserved on `feat/control-panel-backend-v1` and is on hold while the product owner prioritizes Clinic App modules. Black does not edit Green's Clinic App/auth service or deploy clinical resources without review.
+- **Agent Green — current slice:** owns the Clinic App billing, pharmacy fulfillment, and reception checkout UI in `apps/clinic` while preserving consultation, login, and booking flows. Green does not implement the Control Panel or workflow backend.
+- **Agent Black — current slice:** owns billing and pharmacy fulfillment APIs in `services/clinic-workflow-aws` while preserving the consultation and reception endpoints. The separate Control Panel backend foundation is preserved on `feat/control-panel-backend-v1` and is on hold while the product owner prioritizes Clinic App modules. Black does not edit Green's Clinic App/auth service or deploy clinical resources without review.
 
 Each handoff includes changed paths, the behavior proved, checks run, unresolved decisions, and the next dependency. Work on reviewable branches of the existing `matheen1068/clinicpluz` repository. Do not mix Control Panel and Clinic App changes into the same slice without a reviewed interface contract.
 

@@ -247,8 +247,9 @@ select:focus-visible, input:focus-visible { outline: 3px solid #82d6a3; outline-
   .workflow-inline button { width: 100%; }
 }
 
-.workspace-nav { display: flex; gap: 6px; width: fit-content; max-width: 100%; margin: 0 0 23px; padding: 5px; border: 1px solid #d5e5da; border-radius: 12px; background: #edf4ee; }
+.workspace-nav { display: flex; gap: 6px; width: fit-content; max-width: 100%; margin: 0 0 23px; padding: 5px; border: 1px solid #d5e5da; border-radius: 12px; background: #edf4ee; overflow-x: auto; }
 .workspace-nav button { min-height: 38px; padding: 0 17px; color: #557363; border: 0; border-radius: 9px; background: transparent; font-size: 13px; font-weight: 740; }
+.workspace-nav button { flex: 0 0 auto; }
 .workspace-nav button[aria-current="page"] { color: #155b40; background: #fff; box-shadow: 0 3px 12px rgba(18, 74, 44, .1); }
 .consultation-layout { display: grid; grid-template-columns: minmax(275px, 32%) minmax(0, 1fr); align-items: start; gap: 20px; }
 .consultation-layout.is-doctor { grid-template-columns: minmax(0, 1fr); }
@@ -410,6 +411,55 @@ select:focus-visible, input:focus-visible { outline: 3px solid #82d6a3; outline-
 .prescription-handoff-detail li { padding: 9px; border: 1px solid #e0ebe3; border-radius: 8px; background: #fff; }
 .prescription-handoff-detail li strong { color: #1f4c36; font-size: 12px; }
 .prescription-handoff-print { width: auto; min-height: 40px; margin-top: 16px; }
+.workflow-fee-confirm, .billing-action-box, .pharmacy-fulfillment { margin-top: 18px; padding: 18px; border: 1px solid #d7e7da; border-radius: 13px; background: #f7fbf8; }
+.workflow-fee-confirm h5, .billing-action-box h6, .pharmacy-fulfillment h6 { margin: 0 0 9px; color: #1d4935; font-size: 15px; }
+.workflow-fee-confirm p, .billing-action-box p, .pharmacy-fulfillment p { color: #4a6857; font-size: 12px; line-height: 1.6; }
+.workflow-fee-confirm label, .billing-confirm { display: flex; align-items: flex-start; gap: 9px; color: #254a38; font-size: 12px; line-height: 1.5; }
+.workflow-fee-confirm input[type="checkbox"], .billing-confirm input[type="checkbox"] { flex: 0 0 auto; margin-top: 2px; accent-color: #18805a; }
+.workflow-fee-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 14px; }
+.workflow-fee-actions .workflow-action, .billing-action-box .workflow-action, .pharmacy-fulfillment .workflow-action { width: auto; min-height: 39px; }
+.billing-head, .pharmacy-fulfillment-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 14px; }
+.billing-groups { display: grid; gap: 18px; }
+.billing-groups h5 { margin: 0 0 8px; color: #1e563d; font-size: 13px; }
+.billing-groups h5 span { padding: 3px 7px; border-radius: 99px; background: #edf6ef; color: #3e7456; }
+.billing-episode-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr)); gap: 9px; }
+.billing-episode { display: grid; gap: 5px; min-width: 0; padding: 14px; border: 1px solid #dce8e0; border-radius: 11px; background: #fbfdfb; color: #385d49; text-align: left; }
+.billing-episode:hover, .billing-episode.is-selected { border-color: #5eaf7c; background: #ecf8ef; }
+.billing-episode:focus-visible, .billing-legacy-list button:focus-visible { outline: 3px solid #249466; outline-offset: 2px; }
+.billing-episode strong { color: #214b36; font-size: 14px; }
+.billing-episode span, .billing-episode small { font-size: 11px; line-height: 1.5; }
+.billing-detail-top { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 15px; padding-bottom: 15px; border-bottom: 1px solid #e3eee6; }
+.billing-detail-top h5 { margin: 6px 0; color: #1c4633; font-size: 20px; }
+.billing-detail-top p { margin: 0; color: #617967; font-size: 11px; }
+.billing-outstanding { display: grid; gap: 4px; text-align: right; }
+.billing-outstanding span { color: #6a806f; font-size: 11px; }
+.billing-outstanding strong { color: #155b40; font-size: 22px; }
+.billing-totals { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 9px; margin: 15px 0; }
+.billing-totals span { display: grid; gap: 5px; padding: 12px; border: 1px solid #e0eae2; border-radius: 9px; background: #f8fbf8; color: #5a7563; font-size: 11px; }
+.billing-totals strong { color: #214a36; font-size: 15px; }
+.billing-detail h6 { margin: 20px 0 8px; color: #214a36; font-size: 13px; }
+.billing-lines { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.billing-lines li { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; padding: 11px; border: 1px solid #e4ece5; border-radius: 8px; font-size: 12px; }
+.billing-lines li span { display: grid; gap: 4px; color: #365b45; }
+.billing-lines li small { color: #6b806f; }
+.billing-lines li strong { color: #214a36; }
+.billing-payment-fields, .pharmacy-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 145px), 1fr)); gap: 10px; margin: 12px 0; }
+.billing-payment-fields label, .pharmacy-fields label { display: grid; gap: 6px; color: #2b553e; font-size: 11px; font-weight: 650; }
+.billing-payment-fields input, .billing-payment-fields select, .pharmacy-fields input, .pharmacy-fields select { width: 100%; min-height: 39px; padding: 8px 10px; border: 1px solid #cbded0; border-radius: 8px; background: #fff; color: #234b36; }
+.billing-payment-fields input:focus-visible, .billing-payment-fields select:focus-visible, .pharmacy-fields input:focus-visible, .pharmacy-fields select:focus-visible { outline: 3px solid #87c6a0; outline-offset: 1px; }
+.billing-legacy-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.pharmacy-fulfillment { margin-top: 22px; }
+.pharmacy-fulfillment-head h6 { margin-bottom: 0; }
+.pharmacy-items { display: grid; gap: 11px; margin-top: 14px; }
+.pharmacy-item { padding: 13px; border: 1px solid #dfe9e1; border-radius: 10px; background: #fff; }
+.pharmacy-item-heading { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; color: #204b36; font-size: 13px; }
+.pharmacy-item-heading span { color: #60816a; font-size: 11px; text-transform: capitalize; }
+.pharmacy-item ul { display: grid; gap: 3px; margin: 7px 0; padding-left: 18px; color: #536f5e; font-size: 11px; }
+.pharmacy-fulfillment-actions { display: grid; justify-items: start; gap: 12px; margin-top: 17px; }
+.pharmacy-print-action { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-top: 16px; padding-top: 14px; border-top: 1px solid #dfe9e1; }
+.pharmacy-print-action p { margin: 0; }
+.pharmacy-handover-print { display: none; }
+.billing-receipt-print { display: none; }
 .prescription-email { margin-top: 18px; padding-top: 16px; border-top: 1px solid #dfe9e2; }
 .prescription-email h6 { margin: 0 0 6px; }
 .prescription-email > p, .prescription-email-confirm p { margin: 6px 0 12px; color: #4a6857; font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; }
@@ -451,7 +501,32 @@ select:focus-visible, input:focus-visible { outline: 3px solid #82d6a3; outline-
   html, body, .app-layout, .login-panel { min-width: 0; min-height: 0 !important; background: #fff !important; }
   .app-layout--workspace .login-panel { min-height: 0; padding: 0; }
   .app-layout--workspace .panel-center { width: 100%; margin: 0; padding: 0; }
-  .panel-top, .panel-footer, .demo-banner, .workspace-header, .workspace-nav, .consultation > :not(.prescription-print), .prescription-handoff > :not(.prescription-print) { display: none !important; }
+  .panel-top, .panel-footer, .demo-banner, .workspace-header, .workspace-nav, .consultation > :not(.prescription-print), .prescription-handoff > :not(.prescription-print), .billing > :not(.billing-receipt-print) { display: none !important; }
+  .billing-receipt-print { display: block !important; width: 100%; color: #111; font: 11pt/1.45 Georgia, serif; }
+  .billing-receipt-print .billing-print-warning { padding: 8px 0; border-bottom: 1px solid #777; font: bold 9pt/1.4 Arial, sans-serif; text-transform: uppercase; }
+  .billing-receipt-print header { margin: 18px 0; border-bottom: 2px solid #111; }
+  .billing-receipt-print h1 { margin: 0; font-size: 22pt; }
+  .billing-receipt-print h2 { margin: 23px 0 10px; font-size: 13pt; }
+  .billing-receipt-print .billing-print-meta { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px 15px; }
+  .billing-receipt-print table { width: 100%; border-collapse: collapse; }
+  .billing-receipt-print th, .billing-receipt-print td { padding: 7px 5px; border-bottom: 1px solid #999; text-align: left; }
+  .billing-receipt-print th:last-child, .billing-receipt-print td:last-child { text-align: right; }
+  .billing-receipt-print tr { break-inside: avoid; }
+  .billing-receipt-print .billing-print-totals { width: min(100%, 280px); margin: 15px 0 15px auto; }
+  .billing-receipt-print .billing-print-totals p { display: flex; justify-content: space-between; }
+  .billing-receipt-print footer { margin-top: 25px; padding-top: 8px; border-top: 1px solid #777; font-size: 9pt; }
+  .prescription-handoff[data-print-view="pharmacy-slip"] > :not(.pharmacy-handover-print) { display: none !important; }
+  .prescription-handoff[data-print-view="pharmacy-slip"] > .pharmacy-handover-print { display: block !important; width: 100%; color: #111; font: 11pt/1.45 Georgia, serif; }
+  .pharmacy-handover-print .pharmacy-print-warning { padding: 8px 0; border-bottom: 1px solid #777; font: bold 9pt/1.4 Arial, sans-serif; text-transform: uppercase; }
+  .pharmacy-handover-print header { margin: 18px 0; border-bottom: 2px solid #111; }
+  .pharmacy-handover-print h1 { margin: 0; font-size: 22pt; }
+  .pharmacy-handover-print .pharmacy-print-meta { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px 15px; }
+  .pharmacy-handover-print table { width: 100%; margin-top: 18px; border-collapse: collapse; }
+  .pharmacy-handover-print th, .pharmacy-handover-print td { padding: 7px 5px; border-bottom: 1px solid #999; text-align: left; }
+  .pharmacy-handover-print th:last-child, .pharmacy-handover-print td:last-child { text-align: right; }
+  .pharmacy-handover-print tr { break-inside: avoid; }
+  .pharmacy-handover-print .pharmacy-print-total { margin-top: 18px; text-align: right; }
+  .pharmacy-handover-print footer { margin-top: 25px; padding-top: 8px; border-top: 1px solid #777; font-size: 9pt; }
   .prescription-print { display: block !important; position: static; width: 100%; padding: 0; color: #111; font: 12pt/1.45 Georgia, serif; }
   .prescription-print .print-pilot { padding: 8px 0; border-bottom: 1px solid #777; font: bold 9pt/1.4 Arial, sans-serif; text-transform: uppercase; }
   .prescription-print header { margin: 22px 0 15px; border-bottom: 2px solid #111; }
