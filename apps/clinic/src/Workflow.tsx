@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import type { ClinicRole } from './api';
 import {
   createAppointment, getAppointments, getDoctors, pilotDateToday, pilotSlotHasEnded, pilotSlotToIso,
@@ -69,8 +69,20 @@ function WorkflowDesk({ clinicSlug, csrfToken, role, onSessionLost }: Props) {
   const [booking, setBooking] = useState(false);
   const [bookingError, setBookingError] = useState('');
   const [bookingSuccess, setBookingSuccess] = useState('');
+  const [nowMs, setNowMs] = useState(Date.now);
+
+  const slotOptions = useMemo(() => PILOT_SLOTS.map((slot) => {
+    const startAt = pilotSlotToIso(date, slot);
+    return { slot, ended: Boolean(startAt && pilotSlotHasEnded(startAt, nowMs)) };
+  }), [date, nowMs]);
+  const selectedSlotEnded = slotOptions.some((option) => option.slot === time && option.ended);
+  const allSlotsEnded = slotOptions.every((option) => option.ended);
 
   useEffect(() => () => searchController.current?.abort(), []);
+  useEffect(() => {
+    const interval = window.setInterval(() => setNowMs(Date.now()), 30_000);
+    return () => window.clearInterval(interval);
+  }, []);
 
   function handleAccessError(error: unknown): boolean {
     if (!(error instanceof WorkflowApiError)) return false;
@@ -114,6 +126,8 @@ function WorkflowDesk({ clinicSlug, csrfToken, role, onSessionLost }: Props) {
   async function handleSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (query.trim().length < 2 || searchLoading) return;
+    setBookingError('');
+    setBookingSuccess('');
     setResults([]);
     setSelectedPatient(null);
     setSearched(false);
@@ -147,6 +161,8 @@ function WorkflowDesk({ clinicSlug, csrfToken, role, onSessionLost }: Props) {
         ...(email.trim() ? { email: email.trim() } : {}),
       }, csrfToken);
       setSelectedPatient(patient);
+      setBookingError('');
+      setBookingSuccess('');
       setMode('search');
       setQuery('');
       setResults([]);
@@ -159,6 +175,7 @@ function WorkflowDesk({ clinicSlug, csrfToken, role, onSessionLost }: Props) {
 
   async function handleBooking(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    setBookingSuccess('');
     if (!canBook || !selectedPatient || !source || booking || queueLoading || queueError || doctorsLoading || doctorsError) return;
     const startAt = pilotSlotToIso(date, time);
     if (!startAt) { setBookingError('Choose a valid 30-minute slot in the provisional clinic schedule.'); return; }
@@ -204,11 +221,11 @@ function WorkflowDesk({ clinicSlug, csrfToken, role, onSessionLost }: Props) {
           {mode === 'search' || !canBook ? <>
             <form className="workflow-form workflow-search" onSubmit={handleSearch}>
               <label htmlFor="patient-query">Patient name or phone</label>
-              <div className="workflow-inline"><input id="patient-query" type="search" autoComplete="off" value={query} onChange={(event) => { searchController.current?.abort(); setSearchLoading(false); setQuery(event.target.value); setResults([]); setSearched(false); setSelectedPatient(null); }} placeholder="Enter at least 2 characters" minLength={2} required /><button type="submit" disabled={searchLoading || query.trim().length < 2}>{searchLoading ? 'Searching…' : 'Search'}</button></div>
+              <div className="workflow-inline"><input id="patient-query" type="search" autoComplete="off" value={query} onChange={(event) => { searchController.current?.abort(); setSearchLoading(false); setQuery(event.target.value); setResults([]); setSearched(false); setSelectedPatient(null); setBookingError(''); setBookingSuccess(''); }} placeholder="Enter at least 2 characters" minLength={2} required /><button type="submit" disabled={searchLoading || query.trim().length < 2}>{searchLoading ? 'Searching…' : 'Search'}</button></div>
             </form>
             {searchError && <p className="workflow-error" role="alert">{searchError}</p>}
             {searched && results.length === 0 && <p className="workflow-empty" role="status">No matching patients found. {canBook ? 'Register a new patient if needed.' : ''}</p>}
-            {results.length > 0 && <div className="patient-results" role="region" aria-label="Patient search results">{results.map((patient) => <div className="patient-result" key={patient.id}><div><strong>{patient.fullName}</strong><span>{patient.phone} · {patient.ageYears} years at registration · {SEX_LABELS[patient.sex]}</span></div>{canBook && <button type="button" aria-label={`Select ${patient.fullName}`} onClick={() => setSelectedPatient(patient)} disabled={selectedPatient?.id === patient.id}>{selectedPatient?.id === patient.id ? 'Selected' : 'Select'}</button>}</div>)}</div>}
+            {results.length > 0 && <div className="patient-results" role="region" aria-label="Patient search results">{results.map((patient) => <div className="patient-result" key={patient.id}><div><strong>{patient.fullName}</strong><span>{patient.phone} · {patient.ageYears} years at registration · {SEX_LABELS[patient.sex]}</span></div>{canBook && <button type="button" aria-label={`Select ${patient.fullName}`} onClick={() => { setSelectedPatient(patient); setBookingError(''); setBookingSuccess(''); }} disabled={selectedPatient?.id === patient.id}>{selectedPatient?.id === patient.id ? 'Selected' : 'Select'}</button>}</div>)}</div>}
             {selectedPatient && canBook && <p className="workflow-selected" role="status">Selected patient: <strong>{selectedPatient.fullName}</strong></p>}
           </> : <form className="workflow-form workflow-register" onSubmit={handleRegister} aria-busy={registering}>
             <div className="workflow-fields"><label>Full name<input value={fullName} onChange={(event) => setFullName(event.target.value)} autoComplete="off" maxLength={120} required disabled={registering} /></label><label>Phone number<input type="tel" value={phone} onChange={(event) => setPhone(event.target.value)} autoComplete="off" maxLength={25} required disabled={registering} /></label><label>Age in years<input type="number" min="0" max="120" step="1" value={ageYears} onChange={(event) => setAgeYears(event.target.value)} required disabled={registering} /></label><label>Sex<select value={sex} onChange={(event) => setSex(event.target.value as PatientSex | '')} required disabled={registering}><option value="" disabled>Choose one</option><option value="female">Female</option><option value="male">Male</option><option value="other">Other</option><option value="undisclosed">Prefer not to say</option></select></label><label className="workflow-span">Email <span className="workflow-optional">optional</span><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="off" maxLength={254} disabled={registering} /></label></div>
@@ -220,14 +237,15 @@ function WorkflowDesk({ clinicSlug, csrfToken, role, onSessionLost }: Props) {
         <section className="workflow-card" aria-labelledby="booking-heading">
           <div className="workflow-card-head"><div><span className="workflow-step">02</span><h4 id="booking-heading">{canBook ? 'Book a visit' : 'Doctor roster'}</h4></div><p>{canBook ? 'Choose a doctor and request a slot. The server confirms conflicts.' : 'View doctors and the date queue.'}</p></div>
           {doctorsLoading ? <p className="workflow-muted" role="status">Loading doctors…</p> : doctorsError ? <div role="alert"><p className="workflow-error">{doctorsError}</p><button className="workflow-link" type="button" onClick={() => setDoctorReload((value) => value + 1)}>Retry doctor list</button></div> : doctors.length === 0 ? <p className="workflow-empty">No doctors are configured for this clinic.</p> : canBook ? <form className="workflow-form workflow-book" onSubmit={handleBooking} aria-busy={booking}>
-            <label>Doctor<select value={selectedDoctorId} onChange={(event) => setSelectedDoctorId(event.target.value)} required disabled={booking}><option value="">Choose a doctor</option>{doctors.map((doctor) => <option value={doctor.id} key={doctor.id}>{doctor.displayName}</option>)}</select></label>
-            <label>Visit date<input type="date" value={date} onChange={(event) => { setDate(event.target.value); setBookingError(''); setBookingSuccess(''); }} required disabled={booking} /></label>
-            <label>30-minute start time<select value={time} onChange={(event) => { setTime(event.target.value); setBookingError(''); }} required disabled={booking}><option value="">Choose a time</option>{PILOT_SLOTS.map((slot) => <option value={slot} key={slot}>{slot}</option>)}</select></label>
-            <fieldset className="workflow-source"><legend>How did the patient arrive?</legend><label><input type="radio" name="source" value="phone" checked={source === 'phone'} onChange={() => setSource('phone')} required disabled={booking} /> Phone booking</label><label><input type="radio" name="source" value="walk_in" checked={source === 'walk_in'} onChange={() => setSource('walk_in')} required disabled={booking} /> Walk-in check-in</label></fieldset>
-            <p className="workflow-hint">Showing requested times, not guaranteed availability. The clinic service prevents double-booking.</p>
+            <label>Doctor<select value={selectedDoctorId} onChange={(event) => { setSelectedDoctorId(event.target.value); setBookingError(''); setBookingSuccess(''); }} required disabled={booking}><option value="">Choose a doctor</option>{doctors.map((doctor) => <option value={doctor.id} key={doctor.id}>{doctor.displayName}</option>)}</select></label>
+            <label>Visit date<input type="date" value={date} onChange={(event) => { setDate(event.target.value); setTime(''); setBookingError(''); setBookingSuccess(''); }} required disabled={booking} /></label>
+            <label>30-minute start time<select value={time} onChange={(event) => { setTime(event.target.value); setBookingError(''); setBookingSuccess(''); }} required disabled={booking}><option value="">Choose a time</option>{slotOptions.map(({ slot, ended }) => <option value={slot} key={slot} disabled={ended}>{slot}{ended ? ' — ended' : ''}</option>)}</select></label>
+            <fieldset className="workflow-source"><legend>How did the patient arrive?</legend><label><input type="radio" name="source" value="phone" checked={source === 'phone'} onChange={() => { setSource('phone'); setBookingError(''); setBookingSuccess(''); }} required disabled={booking} /> Phone booking</label><label><input type="radio" name="source" value="walk_in" checked={source === 'walk_in'} onChange={() => { setSource('walk_in'); setBookingError(''); setBookingSuccess(''); }} required disabled={booking} /> Walk-in check-in</label></fieldset>
+            <p className="workflow-hint">{allSlotsEnded ? 'All slots on this date have ended. Choose a future date.' : 'Ended slots are disabled. Remaining times are requests, not guaranteed availability; the clinic service prevents double-booking.'}</p>
+            {selectedSlotEnded && <p className="workflow-error" role="alert">The selected slot has ended. Choose a later time.</p>}
             {bookingError && <p className="workflow-error" role="alert">{bookingError}</p>}
             {bookingSuccess && <p className="workflow-success" role="status">{bookingSuccess}</p>}
-            <button className="workflow-action" type="submit" disabled={!selectedPatient || !selectedDoctorId || !time || !source || booking || queueLoading || !!queueError}>{booking ? 'Saving visit…' : source === 'walk_in' ? 'Check in walk-in' : 'Book phone appointment'}</button>
+            <button className="workflow-action" type="submit" disabled={!selectedPatient || !selectedDoctorId || !time || selectedSlotEnded || !source || booking || queueLoading || !!queueError}>{booking ? 'Saving visit…' : source === 'walk_in' ? 'Check in walk-in' : 'Book phone appointment'}</button>
             {!selectedPatient && <p className="workflow-hint">Select or register a patient first.</p>}
             {queueError && <p className="workflow-hint">Reload the queue before booking.</p>}
           </form> : <ul className="workflow-doctors">{doctors.map((doctor) => <li key={doctor.id}>{doctor.displayName}</li>)}</ul>}
