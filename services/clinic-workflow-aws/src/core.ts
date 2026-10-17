@@ -71,6 +71,19 @@ export interface Config { publicOrigin: string; edgeKey: string; now?: () => Dat
 const ROLES = new Set<Role>(['clinic_admin', 'doctor', 'receptionist', 'nurse', 'lab_tech', 'billing', 'pharmacist']);
 const PRESCRIPTION_ROLES = new Set<Role>(['clinic_admin', 'receptionist', 'pharmacist']);
 const PRESCRIPTION_EMAIL_ROLES = new Set<Role>(['clinic_admin', 'receptionist']);
+
+function emailFailureMetadata(error: unknown): { name: string; httpStatusCode?: number; requestId?: string } {
+  if (!error || typeof error !== 'object') return { name: 'UnknownError' };
+  const candidate = error as { name?: unknown; $metadata?: { httpStatusCode?: unknown; requestId?: unknown } };
+  const name = typeof candidate.name === 'string' && /^[A-Za-z0-9_.-]{1,80}$/.test(candidate.name)
+    ? candidate.name : 'UnknownError';
+  const httpStatusCode = typeof candidate.$metadata?.httpStatusCode === 'number'
+    ? candidate.$metadata.httpStatusCode : undefined;
+  const requestId = typeof candidate.$metadata?.requestId === 'string' &&
+    /^[A-Za-z0-9-]{1,128}$/.test(candidate.$metadata.requestId)
+    ? candidate.$metadata.requestId : undefined;
+  return { name, ...(httpStatusCode ? { httpStatusCode } : {}), ...(requestId ? { requestId } : {}) };
+}
 const VIEW_ROLES = new Set<Role>(['clinic_admin', 'receptionist', 'nurse']);
 const WRITE_ROLES = new Set<Role>(['clinic_admin', 'receptionist', 'nurse']);
 const RESERVED = new Set(['admin', 'api', 'app', 'control', 'controlpanel', 'staging', 'www']);
@@ -515,16 +528,29 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
           if (claimed === 'accepted') return result(200, { status: 'accepted', recipientMasked });
           if (claimed === 'pending') return result(202, { status: 'pending', recipientMasked });
           if (claimed === 'unknown') return result(409, { status: 'unknown', recipientMasked });
+          let stage: 'ses_send' | 'record_acceptance' = 'ses_send';
+          let acceptedMessageId: string | undefined;
           try {
             const messageId = await config.prescriptionEmail.send(recipient, pdf);
             if (!messageId || messageId.length > 256) throw new Error('Invalid SES acceptance');
+            acceptedMessageId = messageId;
+            stage = 'record_acceptance';
             await store.markPrescriptionEmail(clinicSlug, found.appointment.id,
               found.encounter.revision, 'accepted', now().toISOString(), messageId);
             return result(202, { status: 'accepted', recipientMasked });
-          } catch {
+          } catch (error) {
+            // Log only the failure stage and AWS request metadata; never log patient details or PDF bytes.
+            console.error('prescription_email_outcome_unknown', {
+              stage, ...emailFailureMetadata(error),
+              ...(acceptedMessageId ? { messageId: acceptedMessageId } : {}),
+            });
             // SES acceptance may be ambiguous after a timeout. Never automatically send again.
             try { await store.markPrescriptionEmail(clinicSlug, found.appointment.id,
-              found.encounter.revision, 'unknown', now().toISOString()); } catch { /* claim remains pending */ }
+              found.encounter.revision, 'unknown', now().toISOString()); }
+            catch (recordError) {
+              console.error('prescription_email_record_unknown_failed', emailFailureMetadata(recordError));
+              // The claim remains pending until manually reconciled.
+            }
             return result(503, { error: 'Demo email outcome unknown; do not resend automatically' });
           }
         }
