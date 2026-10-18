@@ -179,6 +179,7 @@ select:focus-visible, input:focus-visible { outline: 3px solid #82d6a3; outline-
 .workflow-switch { display: flex; gap: 5px; width: fit-content; max-width: 100%; padding: 4px; border: 1px solid #dde9e1; border-radius: 11px; background: #f3f7f4; }
 .workflow-switch button { padding: 9px 14px; color: #5b7867; border: 0; border-radius: 8px; background: transparent; font-size: 12px; font-weight: 700; }
 .workflow-switch button.is-active { color: #205b42; background: #fff; box-shadow: 0 2px 9px rgba(18, 77, 43, .09); }
+.workflow-switch button:disabled { opacity: .6; }
 .workflow-form { margin-top: 17px; }
 .workflow-form label, .workflow-queue-controls label { display: block; color: #355747; font-size: 12px; font-weight: 700; }
 .workflow-form input:not([type="radio"]), .workflow-form select, .workflow-queue-controls input { width: 100%; min-height: 42px; margin-top: 7px; padding: 8px 11px; color: #1b3b32; border: 1px solid #cbded2; border-radius: 9px; background: #fff; font: inherit; font-size: 13px; }
@@ -196,16 +197,26 @@ select:focus-visible, input:focus-visible { outline: 3px solid #82d6a3; outline-
 .workflow-muted, .workflow-hint { color: #6d8377; font-size: 12px; line-height: 1.5; }
 .workflow-hint { margin: 11px 0 0; }
 .patient-results { display: grid; gap: 7px; max-height: 232px; overflow: auto; margin-top: 12px; }
-.patient-result { display: flex; align-items: center; justify-content: space-between; gap: 11px; padding: 11px 12px; border: 1px solid #dce8e0; border-radius: 10px; background: #fbfdfb; }
+.patient-result { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 11px; padding: 11px 12px; border: 1px solid #dce8e0; border-radius: 10px; background: #fbfdfb; }
 .patient-result > div { display: grid; gap: 4px; min-width: 0; }
 .patient-result strong { font-size: 12px; }
 .patient-result span { color: #758a7d; font-size: 11px; line-height: 1.35; }
 .patient-result button, .workflow-link { padding: 7px 10px; color: #247e5d; border: 1px solid #bfdcc9; border-radius: 8px; background: #fff; font-size: 11px; font-weight: 740; white-space: nowrap; }
 .patient-result button:disabled { opacity: .62; }
+.patient-result > .patient-result-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.patient-id { display: block; color: #526e5d; font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
+.patient-id code { font: 600 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+.workflow-selected { display: grid; gap: 4px; }
+.workflow-selected > small { font-size: 11px; }
+.workflow-contact-source { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin: 13px 0; padding: 12px; border: 1px solid #cfe4d6; border-radius: 10px; background: #f6fbf7; }
+.workflow-contact-source > div { display: grid; gap: 4px; min-width: 0; color: #355747; font-size: 11px; line-height: 1.45; }
+.workflow-contact-source strong { font-size: 12px; }
+.workflow-register input[readonly] { background: #f3f7f4; }
 .workflow-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .workflow-span { grid-column: 1 / -1; }
 .workflow-optional { color: #81988b; font-weight: 500; }
 .workflow-book { display: grid; gap: 13px; }
+.workflow-book-patient { display: grid; gap: 3px; padding: 10px 12px; border: 1px solid #c6e8d4; border-radius: 9px; background: #effaf2; color: #226347; font-size: 12px; }
 .workflow-book .workflow-action { margin-top: 3px; }
 .workflow-source { display: flex; flex-wrap: wrap; gap: 15px; margin: 0; padding: 12px; border: 1px solid #dce8e0; border-radius: 9px; }
 .workflow-source legend { padding: 0 4px; color: #355747; font-size: 12px; font-weight: 700; }
