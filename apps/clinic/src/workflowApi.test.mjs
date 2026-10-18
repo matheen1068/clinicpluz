@@ -19,7 +19,7 @@ test('patient search keeps patient names out of the URL and includes session and
     assert.equal(options.cache, 'no-store');
     assert.equal(options.headers['X-CSRF-Token'], 'session-csrf');
     assert.deepEqual(JSON.parse(options.body), { query: 'Maya Lin' });
-    return Response.json({ items: [{ id: 'p1', fullName: 'Maya Lin', phone: '9999999999', ageYears: 36, sex: 'female' }] });
+    return Response.json({ items: [{ id: 'p1', fullName: 'Maya Lin', phone: '9999999999', ageYears: 36, sex: 'female', contactPatientId: null }] });
   });
   try {
     assert.equal((await searchPatients('goodwell', ' Maya Lin ', 'session-csrf'))[0].id, 'p1');
@@ -31,7 +31,7 @@ test('registration and booking send typed JSON and preserve conflict status', as
   const calls = [];
   const restore = mockFetch(async (path, options) => {
     calls.push({ path, options });
-    if (path.endsWith('/patients')) return Response.json({ patient: { id: 'p1', fullName: 'Maya Lin', phone: '9999999999', ageYears: 36, sex: 'female' } }, { status: 201 });
+    if (path.endsWith('/patients')) return Response.json({ patient: { id: 'p1', fullName: 'Maya Lin', phone: '9999999999', ageYears: 36, sex: 'female', contactPatientId: null } }, { status: 201 });
     return Response.json({ error: 'slot occupied' }, { status: 409 });
   });
   try {
@@ -41,6 +41,56 @@ test('registration and booking send typed JSON and preserve conflict status', as
     assert.equal(calls[1].path, '/api/workflow/clinics/goodwell/appointments');
     assert.equal(calls[1].options.headers['X-CSRF-Token'], 'csrf');
     assert.equal(JSON.parse(calls[1].options.body).source, 'phone');
+  } finally { restore(); }
+});
+
+test('shared contact registration keeps a distinct patient ID and does not copy email', async () => {
+  const calls = [];
+  const restore = mockFetch(async (path, options) => {
+    calls.push({ path, options });
+    if (path.endsWith('/patients/search')) return Response.json({ items: [
+      { id: 'existing-1', fullName: 'Sam Lee', phone: '9999999999', ageYears: 42, sex: 'male', email: 'sam@example.test', contactPatientId: null },
+      { id: 'child-2', fullName: 'Jo Lee', phone: '9999999999', ageYears: 8, sex: 'other', contactPatientId: 'existing-1' },
+    ] });
+    assert.equal(path, '/api/workflow/clinics/goodwell/patients');
+    assert.deepEqual(JSON.parse(options.body), {
+      fullName: 'Alex Lee', phone: '9999999999', ageYears: 5, sex: 'undisclosed', contactPatientId: 'existing-1',
+    });
+    return Response.json({ patient: {
+      id: 'new-3', fullName: 'Alex Lee', phone: '9999999999', ageYears: 5, sex: 'undisclosed', contactPatientId: 'existing-1',
+    } }, { status: 201 });
+  });
+  try {
+    const matches = await searchPatients('goodwell', '9999999999', 'csrf');
+    assert.deepEqual(matches.map((patient) => patient.id), ['existing-1', 'child-2']);
+    assert.equal(matches[1].contactPatientId, 'existing-1');
+    const created = await registerPatient('goodwell', {
+      fullName: 'Alex Lee', phone: matches[0].phone, ageYears: 5, sex: 'undisclosed', contactPatientId: matches[0].id,
+    }, 'csrf');
+    assert.equal(created.id, 'new-3');
+    assert.notEqual(created.id, matches[0].id);
+    assert.equal(created.contactPatientId, matches[0].id);
+    assert.equal(calls[1].options.headers['X-CSRF-Token'], 'csrf');
+  } finally { restore(); }
+});
+
+test('malformed shared-contact IDs and responses fail closed', async () => {
+  let calls = 0;
+  const restore = mockFetch(async () => {
+    calls += 1;
+    return Response.json({ patient: {
+      id: 'new-3', fullName: 'Alex Lee', phone: '9999999999', ageYears: 5, sex: 'undisclosed', contactPatientId: '../another-clinic',
+    } }, { status: 201 });
+  });
+  try {
+    await assert.rejects(registerPatient('goodwell', {
+      fullName: 'Alex Lee', phone: '9999999999', ageYears: 5, sex: 'undisclosed', contactPatientId: '../another-clinic',
+    }, 'csrf'), WorkflowApiError);
+    assert.equal(calls, 0);
+    await assert.rejects(registerPatient('goodwell', {
+      fullName: 'Alex Lee', phone: '9999999999', ageYears: 5, sex: 'undisclosed', contactPatientId: 'existing-1',
+    }, 'csrf'), WorkflowApiError);
+    assert.equal(calls, 1);
   } finally { restore(); }
 });
 
