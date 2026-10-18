@@ -46,12 +46,18 @@ function optionalBool(item: Item, name: string): boolean {
 function patient(item: Item): Patient {
   const sex = string(item, 'sex') as Sex;
   if (!sexes.has(sex)) throw new Error('Invalid sex');
+  const contactPatientId = item.contactPatientId === undefined ? null : maybeString(item, 'contactPatientId');
+  if (contactPatientId !== null && !/^[A-Za-z0-9_-]{1,64}$/.test(contactPatientId)) {
+    throw new Error('Invalid contactPatientId');
+  }
   return { id: string(item, 'id'), fullName: string(item, 'fullName'), phone: string(item, 'phone'),
-    ageYears: integer(item, 'ageYears'), sex, email: maybeString(item, 'email'), registeredAt: string(item, 'registeredAt') };
+    ageYears: integer(item, 'ageYears'), sex, email: maybeString(item, 'email'), contactPatientId,
+    registeredAt: string(item, 'registeredAt') };
 }
 function patientFields(value: Patient): Item {
   return { id: s(value.id), fullName: s(value.fullName), phone: s(value.phone),
     ageYears: n(value.ageYears), sex: s(value.sex), email: value.email ? s(value.email) : { NULL: true },
+    contactPatientId: value.contactPatientId ? s(value.contactPatientId) : { NULL: true },
     registeredAt: s(value.registeredAt) };
 }
 function doctor(item: Item): Doctor {
@@ -201,9 +207,18 @@ export class DynamoWorkflowStore implements WorkflowStore {
     const item = await this.get(`CLINIC#${slug}#PATIENTS`, `PATIENT#${id}`);
     return item ? patient(item) : null;
   }
-  async createPatient(slug: string, value: Patient, nameKey: string, phoneKey: string, actorSub: string): Promise<void> {
+  async createPatient(slug: string, value: Patient, nameKey: string, phoneKey: string, actorSub: string,
+    contact: Pick<Patient, 'id' | 'phone'> | null): Promise<void> {
+    if (value.contactPatientId !== (contact?.id ?? null)) throw new Error('Invalid contact link');
     const record = patientFields(value);
+    const contactCheck: TransactWriteItem[] = contact ? [{ ConditionCheck: {
+      TableName: this.table,
+      Key: { pk: s(`CLINIC#${slug}#PATIENTS`), sk: s(`PATIENT#${contact.id}`) },
+      ConditionExpression: 'attribute_exists(pk) AND #phone = :phone',
+      ExpressionAttributeNames: { '#phone': 'phone' }, ExpressionAttributeValues: { ':phone': s(contact.phone) },
+    } }] : [];
     await this.client.send(new TransactWriteItemsCommand({ TransactItems: [
+      ...contactCheck,
       { Put: { TableName: this.table, Item: {
         pk: s(`CLINIC#${slug}#PATIENTS`), sk: s(`PATIENT#${value.id}`), ...record,
       }, ConditionExpression: 'attribute_not_exists(pk)' } },
