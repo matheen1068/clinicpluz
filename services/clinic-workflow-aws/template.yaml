@@ -149,7 +149,9 @@ Resources:
           - Statement:
               - Effect: Allow
                 Action: ses:SendEmail
-                Resource: !Sub arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/${PrescriptionSenderEmail}
+                # Staging-only diagnostic for a live SESv2 AccessDenied with the sender identity ARN.
+                # The exact sender and recipient conditions remain mandatory; narrow this after diagnosis.
+                Resource: '*'
                 Condition:
                   StringEquals:
                     ses:FromAddress: !Ref PrescriptionSenderEmail
