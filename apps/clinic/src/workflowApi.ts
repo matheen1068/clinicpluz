@@ -11,6 +11,7 @@ export interface Patient {
   ageYears: number;
   sex: PatientSex;
   email?: string;
+  contactPatientId: string | null;
 }
 export interface Appointment {
   id: string;
@@ -36,6 +37,7 @@ export interface NewPatient {
   ageYears: number;
   sex: PatientSex;
   email?: string;
+  contactPatientId?: string;
 }
 export interface NewAppointment { patientId: string; doctorId: string; startAt: string; source: BookingSource }
 
@@ -92,13 +94,16 @@ function doctor(value: unknown): Doctor {
 function patient(value: unknown): Patient {
   if (!isRecord(value) || !nonempty(value.id) || !nonempty(value.fullName) || !nonempty(value.phone) ||
       typeof value.ageYears !== 'number' || !Number.isInteger(value.ageYears) || value.ageYears < 0 || !SEXES.has(value.sex as PatientSex) ||
-      (value.email !== undefined && value.email !== null && typeof value.email !== 'string')) {
+      (value.email !== undefined && value.email !== null && typeof value.email !== 'string') ||
+      (value.contactPatientId !== undefined && value.contactPatientId !== null &&
+        (typeof value.contactPatientId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(value.contactPatientId)))) {
     throw new WorkflowApiError(null, 'Invalid patient response');
   }
   return {
     id: value.id, fullName: value.fullName, phone: value.phone, ageYears: value.ageYears,
     sex: value.sex as PatientSex,
     ...(typeof value.email === 'string' && value.email ? { email: value.email } : {}),
+    contactPatientId: typeof value.contactPatientId === 'string' ? value.contactPatientId : null,
   };
 }
 function validTimestamp(value: unknown): value is string {
@@ -139,6 +144,9 @@ export async function searchPatients(slug: string, query: string, csrfToken: str
   })).map(patient);
 }
 export async function registerPatient(slug: string, input: NewPatient, csrfToken: string): Promise<Patient> {
+  if (input.contactPatientId !== undefined && !/^[A-Za-z0-9_-]{1,64}$/.test(input.contactPatientId)) {
+    throw new WorkflowApiError(null, 'Invalid shared contact patient');
+  }
   const result = await request(workflowPath(slug, 'patients'), {
     method: 'POST', headers: mutationHeaders(csrfToken), body: JSON.stringify(input),
   });
