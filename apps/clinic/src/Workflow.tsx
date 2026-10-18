@@ -61,6 +61,8 @@ function WorkflowDesk({ clinicSlug, csrfToken, role, onSessionLost, onPendingCha
   const [searchError, setSearchError] = useState('');
   const [searched, setSearched] = useState(false);
   const [selectedPatient, setSelectedPatient] = useState<Patient | null>(null);
+  const [contactPatient, setContactPatient] = useState<Patient | null>(null);
+  const [registeredPatientId, setRegisteredPatientId] = useState<string | null>(null);
   const [fullName, setFullName] = useState('');
   const [phone, setPhone] = useState('');
   const [ageYears, setAgeYears] = useState('');
@@ -110,6 +112,8 @@ function WorkflowDesk({ clinicSlug, csrfToken, role, onSessionLost, onPendingCha
       setQueue([]);
       setResults([]);
       setSelectedPatient(null);
+      setContactPatient(null);
+      setRegisteredPatientId(null);
       return true;
     }
     return false;
@@ -174,6 +178,7 @@ function WorkflowDesk({ clinicSlug, csrfToken, role, onSessionLost, onPendingCha
     setBookingSuccess('');
     setResults([]);
     setSelectedPatient(null);
+    setRegisteredPatientId(null);
     setSearched(false);
     setSearchError('');
     setSearchLoading(true);
@@ -186,6 +191,24 @@ function WorkflowDesk({ clinicSlug, csrfToken, role, onSessionLost, onPendingCha
     } catch (error) {
       if (!controller.signal.aborted && !handleAccessError(error)) setSearchError(errorMessage(error, 'search'));
     } finally { if (!controller.signal.aborted) setSearchLoading(false); }
+  }
+
+  function startNewRegistration(contact: Patient | null = null) {
+    searchController.current?.abort();
+    setSearchLoading(false);
+    setMode('register');
+    setSelectedPatient(null);
+    setRegisteredPatientId(null);
+    setContactPatient(contact);
+    setFullName('');
+    setPhone(contact?.phone ?? '');
+    setAgeYears('');
+    setSex('');
+    setEmail('');
+    setSearchError('');
+    setRegisterError('');
+    setBookingError('');
+    setBookingSuccess('');
   }
 
   async function handleRegister(event: FormEvent<HTMLFormElement>) {
@@ -203,17 +226,22 @@ function WorkflowDesk({ clinicSlug, csrfToken, role, onSessionLost, onPendingCha
       const patient = await registerPatient(clinicSlug, {
         fullName: fullName.trim(), phone: phone.trim(), ageYears: age, sex,
         ...(email.trim() ? { email: email.trim() } : {}),
+        ...(contactPatient ? { contactPatientId: contactPatient.id } : {}),
       }, csrfToken);
       setSelectedPatient(patient);
+      setRegisteredPatientId(patient.id);
       setBookingError('');
       setBookingSuccess('');
       setMode('search');
       setQuery('');
       setResults([]);
       setSearched(false);
+      setContactPatient(null);
       setFullName(''); setPhone(''); setAgeYears(''); setSex(''); setEmail('');
     } catch (error) {
-      if (!handleAccessError(error)) setRegisterError(errorMessage(error, 'register'));
+      if (!handleAccessError(error)) setRegisterError(error instanceof WorkflowApiError && error.status === 400 && contactPatient
+        ? 'Registration was rejected. Check the details and search for the shared contact again; its number or clinic record may have changed.'
+        : errorMessage(error, 'register'));
     } finally { setRegistering(false); }
   }
 
@@ -290,18 +318,20 @@ function WorkflowDesk({ clinicSlug, csrfToken, role, onSessionLost, onPendingCha
       <div className="workflow-grid">
         <section className="workflow-card" aria-labelledby="patient-heading">
           <div className="workflow-card-head"><div><span className="workflow-step">01</span><h4 id="patient-heading">Find a patient</h4></div><p>Staff enter details for both phone bookings and walk-ins.</p></div>
-          {canBook && <div className="workflow-switch" role="group" aria-label="Patient action"><button type="button" className={mode === 'search' ? 'is-active' : ''} onClick={() => { setMode('search'); setRegisterError(''); }}>Search existing</button><button type="button" className={mode === 'register' ? 'is-active' : ''} onClick={() => { searchController.current?.abort(); setMode('register'); setSelectedPatient(null); setSearchError(''); }}>Register new</button></div>}
+          {canBook && <div className="workflow-switch" role="group" aria-label="Patient action"><button type="button" className={mode === 'search' ? 'is-active' : ''} onClick={() => { setMode('search'); setRegisterError(''); }} disabled={registering || booking}>Search existing</button><button type="button" className={mode === 'register' ? 'is-active' : ''} onClick={() => startNewRegistration()} disabled={registering || booking}>Register new</button></div>}
           {mode === 'search' || !canBook ? <>
             <form className="workflow-form workflow-search" onSubmit={handleSearch}>
               <label htmlFor="patient-query">Patient name or phone</label>
-              <div className="workflow-inline"><input id="patient-query" type="search" autoComplete="off" value={query} onChange={(event) => { searchController.current?.abort(); setSearchLoading(false); setQuery(event.target.value); setResults([]); setSearched(false); setSelectedPatient(null); setBookingError(''); setBookingSuccess(''); }} placeholder="Enter at least 2 characters" minLength={2} required /><button type="submit" disabled={searchLoading || query.trim().length < 2}>{searchLoading ? 'Searching…' : 'Search'}</button></div>
+              <div className="workflow-inline"><input id="patient-query" type="search" autoComplete="off" value={query} onChange={(event) => { searchController.current?.abort(); setSearchLoading(false); setQuery(event.target.value); setResults([]); setSearched(false); setSelectedPatient(null); setRegisteredPatientId(null); setBookingError(''); setBookingSuccess(''); }} placeholder="Enter at least 2 characters" minLength={2} required disabled={booking} /><button type="submit" disabled={searchLoading || booking || query.trim().length < 2}>{searchLoading ? 'Searching…' : 'Search'}</button></div>
             </form>
             {searchError && <p className="workflow-error" role="alert">{searchError}</p>}
             {searched && results.length === 0 && <p className="workflow-empty" role="status">No matching patients found. {canBook ? 'Register a new patient if needed.' : ''}</p>}
-            {results.length > 0 && <div className="patient-results" role="region" aria-label="Patient search results">{results.map((patient) => <div className="patient-result" key={patient.id}><div><strong>{patient.fullName}</strong><span>{patient.phone} · {patient.ageYears} years at registration · {SEX_LABELS[patient.sex]}</span></div>{canBook && <button type="button" aria-label={`Select ${patient.fullName}`} onClick={() => { setSelectedPatient(patient); setBookingError(''); setBookingSuccess(''); }} disabled={selectedPatient?.id === patient.id}>{selectedPatient?.id === patient.id ? 'Selected' : 'Select'}</button>}</div>)}</div>}
-            {selectedPatient && canBook && <p className="workflow-selected" role="status">Selected patient: <strong>{selectedPatient.fullName}</strong></p>}
+            {results.length > 0 && <><p className="workflow-hint">Several patients may share one contact number. Check the patient ID before booking.</p><div className="patient-results" role="region" aria-label="Patient search results">{results.map((patient) => <div className="patient-result" key={patient.id}><div><strong>{patient.fullName}</strong><span>{patient.phone} · {patient.ageYears} years at registration · {SEX_LABELS[patient.sex]}</span><small className="patient-id">Patient ID: <code>{patient.id}</code></small></div>{canBook && <div className="patient-result-actions"><button type="button" aria-label={`Select patient ${patient.fullName}, ID ${patient.id}`} onClick={() => { setSelectedPatient(patient); setRegisteredPatientId(null); setBookingError(''); setBookingSuccess(''); }} disabled={booking || selectedPatient?.id === patient.id}>{selectedPatient?.id === patient.id ? 'Selected' : 'Select for visit'}</button><button type="button" aria-label={`Use ${patient.fullName}'s contact phone for another patient`} onClick={() => startNewRegistration(patient)} disabled={booking}>Use contact for new patient</button></div>}</div>)}</div></>}
+            {selectedPatient && canBook && <div className="workflow-selected" role="status"><strong>{registeredPatientId === selectedPatient.id ? 'New patient registered and selected' : 'Selected patient'}: {selectedPatient.fullName}</strong><span className="patient-id">Patient ID: <code>{selectedPatient.id}</code></span><small>Bookings use this patient ID; a shared phone number does not merge records.</small></div>}
           </> : <form className="workflow-form workflow-register" onSubmit={handleRegister} aria-busy={registering}>
-            <div className="workflow-fields"><label>Full name<input value={fullName} onChange={(event) => setFullName(event.target.value)} autoComplete="off" maxLength={120} required disabled={registering} /></label><label>Phone number<input type="tel" value={phone} onChange={(event) => setPhone(event.target.value)} autoComplete="off" maxLength={25} required disabled={registering} /></label><label>Age in years<input type="number" min="0" max="120" step="1" value={ageYears} onChange={(event) => setAgeYears(event.target.value)} required disabled={registering} /></label><label>Sex<select value={sex} onChange={(event) => setSex(event.target.value as PatientSex | '')} required disabled={registering}><option value="" disabled>Choose one</option><option value="female">Female</option><option value="male">Male</option><option value="other">Other</option><option value="undisclosed">Prefer not to say</option></select></label><label className="workflow-span">Email <span className="workflow-optional">optional</span><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="off" maxLength={254} disabled={registering} /></label></div>
+            <p className="workflow-hint">Create a separate patient record, including for a child or another person who uses an existing contact number. Search and choose “Use contact for new patient” to link that number.</p>
+            {contactPatient && <div className="workflow-contact-source" role="status"><div><strong>Using contact phone from {contactPatient.fullName}</strong><span className="patient-id">Existing patient ID: <code>{contactPatient.id}</code></span><span>Only the phone number is copied. No email, medical details, or relationship is copied.</span></div><button type="button" className="workflow-link" onClick={() => { setContactPatient(null); setPhone(''); setRegisterError(''); }} disabled={registering}>Use a different phone</button></div>}
+            <div className="workflow-fields"><label>Full name<input value={fullName} onChange={(event) => setFullName(event.target.value)} autoComplete="off" maxLength={120} required disabled={registering} /></label><label>Contact phone number<input type="tel" value={phone} onChange={(event) => setPhone(event.target.value)} autoComplete="off" maxLength={25} required disabled={registering} readOnly={!!contactPatient} /></label><label>Age in years<input type="number" min="0" max="120" step="1" value={ageYears} onChange={(event) => setAgeYears(event.target.value)} required disabled={registering} /></label><label>Sex<select value={sex} onChange={(event) => setSex(event.target.value as PatientSex | '')} required disabled={registering}><option value="" disabled>Choose one</option><option value="female">Female</option><option value="male">Male</option><option value="other">Other</option><option value="undisclosed">Prefer not to say</option></select></label><label className="workflow-span">Email <span className="workflow-optional">optional</span><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="off" maxLength={254} disabled={registering} /></label></div>
             {registerError && <p className="workflow-error" role="alert">{registerError}</p>}
             <button className="workflow-action" type="submit" disabled={registering}>{registering ? 'Saving patient…' : 'Register and select patient'}</button>
           </form>}
@@ -310,6 +340,7 @@ function WorkflowDesk({ clinicSlug, csrfToken, role, onSessionLost, onPendingCha
         <section className="workflow-card" aria-labelledby="booking-heading">
           <div className="workflow-card-head"><div><span className="workflow-step">02</span><h4 id="booking-heading">{canBook ? 'Book a visit' : 'Doctor roster'}</h4></div><p>{canBook ? 'Choose a doctor and request a slot. The server confirms conflicts.' : 'View doctors and the date queue.'}</p></div>
           {doctorsLoading ? <p className="workflow-muted" role="status">Loading doctors…</p> : doctorsError ? <div role="alert"><p className="workflow-error">{doctorsError}</p><button className="workflow-link" type="button" onClick={() => setDoctorReload((value) => value + 1)}>Retry doctor list</button></div> : doctors.length === 0 ? <p className="workflow-empty">No doctors are configured for this clinic.</p> : canBook ? <form className="workflow-form workflow-book" onSubmit={handleBooking} aria-busy={booking}>
+            {selectedPatient && <div className="workflow-book-patient"><strong>Booking for {selectedPatient.fullName}</strong><span className="patient-id">Patient ID: <code>{selectedPatient.id}</code></span></div>}
             <label>Doctor<select value={selectedDoctorId} onChange={(event) => { setSelectedDoctorId(event.target.value); setBookingError(''); setBookingSuccess(''); }} required disabled={booking}><option value="">Choose a doctor</option>{doctors.map((doctor) => <option value={doctor.id} key={doctor.id}>{doctor.displayName}</option>)}</select></label>
             <label>Visit date<input type="date" value={date} onChange={(event) => { setDate(event.target.value); setTime(''); setBookingError(''); setBookingSuccess(''); }} required disabled={booking} /></label>
             <label>30-minute start time<select value={time} onChange={(event) => { setTime(event.target.value); setBookingError(''); setBookingSuccess(''); }} required disabled={booking}><option value="">Choose a time</option>{slotOptions.map(({ slot, ended }) => <option value={slot} key={slot} disabled={ended}>{slot}{ended ? ' — ended' : ''}</option>)}</select></label>
