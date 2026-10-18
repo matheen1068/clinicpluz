@@ -19,7 +19,7 @@ export interface MedicineCatalogItem { id: string; name: string; strength: strin
 export interface Schedule { timezone: string; openMinute: number; closeMinute: number; slotMinutes: number }
 export interface Patient {
   id: string; fullName: string; phone: string; ageYears: number; sex: Sex;
-  email: string | null; registeredAt: string;
+  email: string | null; contactPatientId: string | null; registeredAt: string;
 }
 export interface Appointment {
   id: string; patientId: string; patientName: string; doctorId: string; doctorName: string;
@@ -40,7 +40,8 @@ export interface WorkflowStore {
   getDoctor(slug: string, id: string): Promise<Doctor | null>;
   searchPatients(slug: string, kind: 'name' | 'phone', prefix: string): Promise<Patient[]>;
   getPatient(slug: string, id: string): Promise<Patient | null>;
-  createPatient(slug: string, patient: Patient, nameKey: string, phoneKey: string, actorSub: string): Promise<void>;
+  createPatient(slug: string, patient: Patient, nameKey: string, phoneKey: string, actorSub: string,
+    contact: Pick<Patient, 'id' | 'phone'> | null): Promise<void>;
   listAppointments(slug: string, clinicDate: string): Promise<Appointment[]>;
   createAppointment(slug: string, appointment: Appointment): Promise<boolean>;
   getEncounter(slug: string, clinicDate: string, appointmentId: string): Promise<Encounter | null>;
@@ -177,8 +178,8 @@ function startTime(value: unknown, schedule: Schedule): { startAt: string; start
   return { startAt: value, startUtc: parsed.toISOString(), clinicDate: localDate };
 }
 function publicPatient(patient: Patient) {
-  const { id, fullName, phone, ageYears, sex, email } = patient;
-  return { id, fullName, phone, ageYears, sex, email };
+  const { id, fullName, phone, ageYears, sex, email, contactPatientId } = patient;
+  return { id, fullName, phone, ageYears, sex, email, contactPatientId: contactPatientId ?? null };
 }
 function publicAppointment(appointment: Appointment) {
   const { id, patientId, patientName, doctorId, doctorName, startAt, source, status } = appointment;
@@ -395,20 +396,32 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
         }
         if (input.method === 'POST' && endpoint === 'patients' && !(input.queryString ?? '')) {
           const request = body(input);
-          if (!request || !hasOnly(request, ['fullName', 'phone', 'ageYears', 'sex'], ['email'])) return result(400, { error: 'Invalid patient' });
+          if (!request || !hasOnly(request, ['fullName', 'phone', 'ageYears', 'sex'], ['email', 'contactPatientId'])) {
+            return result(400, { error: 'Invalid patient' });
+          }
           const fullName = cleanName(request.fullName);
           const number = phone(request.phone);
           const patientEmail = email(request.email);
           if (!fullName || !number || patientEmail === undefined ||
               !Number.isInteger(request.ageYears) || typeof request.ageYears !== 'number' ||
-              request.ageYears < 0 || request.ageYears > 130 || !SEXES.has(request.sex as Sex)) {
+              request.ageYears < 0 || request.ageYears > 130 || !SEXES.has(request.sex as Sex) ||
+              (request.contactPatientId !== undefined && request.contactPatientId !== null &&
+                (typeof request.contactPatientId !== 'string' || !ID.test(request.contactPatientId)))) {
+            return result(400, { error: 'Invalid patient' });
+          }
+          // This is a shared-contact reference only. It grants no guardianship rights and does not copy email.
+          const contactPatientId = request.contactPatientId as string | null | undefined;
+          const contact = contactPatientId ? await store.getPatient(clinicSlug, contactPatientId) : null;
+          if (contactPatientId && (!contact || phone(contact.phone)?.digits !== number.digits)) {
             return result(400, { error: 'Invalid patient' });
           }
           const patient: Patient = {
             id: randomUUID(), fullName, phone: number.display, ageYears: request.ageYears,
-            sex: request.sex as Sex, email: patientEmail, registeredAt: now().toISOString(),
+            sex: request.sex as Sex, email: patientEmail, contactPatientId: contact?.id ?? null,
+            registeredAt: now().toISOString(),
           };
-          await store.createPatient(clinicSlug, patient, nameIndex(fullName), number.digits, session.sub);
+          await store.createPatient(clinicSlug, patient, nameIndex(fullName), number.digits, session.sub,
+            contact ? { id: contact.id, phone: contact.phone } : null);
           return result(201, { patient: publicPatient(patient) });
         }
         if (input.method === 'GET' && endpoint === 'appointments') {
