@@ -114,8 +114,11 @@ function setup(options = {}) {
           : patient.phone.replace(/\D/g, '').startsWith(prefix));
     },
     async getPatient(slug, id) { return patients.get(slug)?.get(id) ?? null; },
-    async createPatient(slug, patient, _nameKey, _phoneKey, actorSub) {
+    async createPatient(slug, patient, _nameKey, _phoneKey, actorSub, contact) {
       if (!patients.has(slug)) patients.set(slug, new Map());
+      if (patients.get(slug).has(patient.id)) throw new Error('Patient ID collision');
+      if (contact && (patient.contactPatientId !== contact.id ||
+          patients.get(slug).get(contact.id)?.phone !== contact.phone)) throw new Error('Contact changed');
       patients.get(slug).set(patient.id, patient);
       audit.push({ action: 'patient.registered', slug, actorSub });
     },
@@ -295,6 +298,52 @@ test('patient search stays in a CSRF-protected POST body and registration valida
     { headers: { 'x-csrf-token': 'wrong' } })).status, 403);
   assert.equal((await world.call('POST', path, patient, { headers: { origin: 'https://evil.example' } })).status, 403);
   assert.equal(world.audit.length, 2);
+});
+
+test('same-phone patients get distinct persisted IDs and an optional same-clinic contact link without email inheritance', async () => {
+  const world = setup();
+  const path = `${ROOT}/goodwell/patients`;
+  const parent = await world.call('POST', path, patient);
+  assert.equal(parent.status, 201);
+  assert.match(parent.body.patient.id, /^[a-f0-9-]{36}$/);
+  assert.equal(parent.body.patient.contactPatientId, null);
+  const child = await world.call('POST', path, {
+    fullName: 'Demo Child', phone: '+91 (98765) 43210', ageYears: 8, sex: 'male',
+    contactPatientId: parent.body.patient.id,
+  });
+  assert.equal(child.status, 201);
+  assert.notEqual(child.body.patient.id, parent.body.patient.id);
+  assert.equal(child.body.patient.contactPatientId, parent.body.patient.id);
+  assert.equal(child.body.patient.email, null);
+  const unrelated = await world.call('POST', path, { ...patient, fullName: 'Demo Other', email: null });
+  assert.equal(unrelated.status, 201);
+  assert.notEqual(unrelated.body.patient.id, child.body.patient.id);
+  assert.equal(unrelated.body.patient.contactPatientId, null);
+  const rows = (await world.call('POST', `${path}/search`, { query: '+91 98765' })).body.items;
+  assert.deepEqual(new Set(rows.map((row) => row.id)), new Set([
+    parent.body.patient.id, child.body.patient.id, unrelated.body.patient.id,
+  ]));
+  assert.equal(rows.find((row) => row.id === child.body.patient.id).contactPatientId, parent.body.patient.id);
+  assert.equal(world.patients.get('goodwell').size, 3);
+  assert.equal(world.audit.filter((entry) => entry.action === 'patient.registered').length, 3);
+});
+
+test('contact link rejects unknown, wrong-clinic, malformed, or different-phone patients without registering', async () => {
+  const world = setup();
+  const path = `${ROOT}/goodwell/patients`;
+  const parent = (await world.call('POST', path, patient)).body.patient;
+  const before = world.audit.length;
+  world.patients.set('blesswell', new Map([['other-clinic-id', { ...parent, id: 'other-clinic-id' }]]));
+  for (const input of [
+    { contactPatientId: 'missing-id' },
+    { contactPatientId: 'other-clinic-id' },
+    { contactPatientId: '../bad' },
+    { contactPatientId: parent.id, phone: '+91 98765 43211' },
+  ]) {
+    assert.equal((await world.call('POST', path, { ...patient, fullName: 'Demo Child', ...input })).status, 400);
+  }
+  assert.equal(world.patients.get('goodwell').size, 1);
+  assert.equal(world.audit.length, before);
 });
 
 test('30-minute pilot schedule is validated from clinic settings, including timezone and closing boundary', async () => {
