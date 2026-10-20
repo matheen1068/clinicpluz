@@ -37,6 +37,7 @@ Resources:
     Type: AWS::Cognito::UserPool
     Properties:
       UserPoolName: !Sub clinicpluz-${StageName}-operators
+      UserPoolTier: ESSENTIALS
       AdminCreateUserConfig:
         AllowAdminCreateUserOnly: true
       MfaConfiguration: 'ON'
@@ -68,6 +69,15 @@ Resources:
     Properties:
       Domain: !Sub clinicpluz-${AWS::AccountId}-${StageName}-operators
       UserPoolId: !Ref OperatorUserPool
+      ManagedLoginVersion: 2
+
+  OperatorLoginBranding:
+    Type: AWS::Cognito::ManagedLoginBranding
+    DependsOn: OperatorPoolDomain
+    Properties:
+      UserPoolId: !Ref OperatorUserPool
+      ClientId: !Ref OperatorPoolClient
+      UseCognitoProvidedValues: true
 
   ControlApi:
     Type: AWS::Serverless::HttpApi
