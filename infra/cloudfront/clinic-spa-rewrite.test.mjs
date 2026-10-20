@@ -15,11 +15,20 @@ test('routes clinic login URLs to the app entry point', () => {
   assert.equal(rewrite('HEAD', '/clinic/blesswell/login'), '/index.html');
 });
 
+test('routes Control Panel entry and OAuth callback to its own app', () => {
+  assert.equal(rewrite('GET', '/control/'), '/control/index.html');
+  assert.equal(rewrite('GET', '/control/callback'), '/control/index.html');
+  assert.equal(rewrite('HEAD', '/control/callback/'), '/control/index.html');
+});
+
 test('leaves API, assets, invalid and reserved clinics untouched', () => {
   assert.equal(rewrite('GET', '/api/clinics/goodwell/bootstrap'), '/api/clinics/goodwell/bootstrap');
   assert.equal(rewrite('GET', '/assets/main.js'), '/assets/main.js');
+  assert.equal(rewrite('GET', '/control/assets/main.js'), '/control/assets/main.js');
+  assert.equal(rewrite('GET', '/api/control/customers'), '/api/control/customers');
   assert.equal(rewrite('GET', '/clinic/admin/login/'), '/clinic/admin/login/');
   assert.equal(rewrite('GET', '/clinic/goodwell.evil/login/'), '/clinic/goodwell.evil/login/');
   assert.equal(rewrite('GET', '/clinic/goodwell/'), '/clinic/goodwell/');
   assert.equal(rewrite('POST', '/clinic/goodwell/login/'), '/clinic/goodwell/login/');
+  assert.equal(rewrite('POST', '/control/callback'), '/control/callback');
 });

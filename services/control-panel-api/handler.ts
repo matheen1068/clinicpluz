@@ -17,7 +17,8 @@ function initialize() {
     new DynamoControlRepository(new DynamoDBClient({}), required('AUTH_TABLE')),
     new CognitoStaffLookup(new CognitoIdentityProviderClient({}), required('STAFF_USER_POOL_ID')),
     { publicOrigin: required('PUBLIC_ORIGIN'), operatorIssuer: required('OPERATOR_ISSUER'),
-      operatorClientId: required('OPERATOR_CLIENT_ID'), allowedOperatorSubs: allowed },
+      operatorClientId: required('OPERATOR_CLIENT_ID'), allowedOperatorSubs: allowed,
+      cursorSigningKey: required('CURSOR_SIGNING_KEY') },
   );
 }
 

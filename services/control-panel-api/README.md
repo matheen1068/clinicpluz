@@ -1,46 +1,71 @@
-# ClinicPluz Control Panel backend foundation
+# ClinicPluz Control Panel API (synthetic staging)
 
-This is a **separate, synthetic-staging-only** platform API for clinic onboarding, staff membership, and module entitlements. It has not been deployed, connected to CloudFront, or integrated with a Control Panel frontend. It contains no patient or clinical-record endpoints. The preserved root AI Studio prototype and the Clinic App are unchanged.
+This operator-only service manages customer organizations, their clinic branches, staff memberships, and module settings. One customer may own several branches. A branch name is unique within its customer; its lowercase clinic slug is globally unique and remains the Clinic App tenant key. This service has no patient or clinical-record access. It has not been deployed or connected to the Control Panel frontend.
 
-## Security boundary
+## Operator boundary and staging topology
 
-All routes in [`template.yaml`](template.yaml) require an API Gateway **JWT authorizer** backed by a separate Cognito *operator* user pool. The Lambda accepts only the authorizer's verified JWT claims, checks `token_use=access`, exact issuer and client, then requires the operator's stable `sub` in a server-side allowlist. A browser header such as `X-Operator-Sub`, a clinic staff session cookie, or a clinic admin role cannot authorize these routes. Mutations also require the exact configured same-origin `Origin` header. Responses are `no-store`. The default allowlisted subject is an all-zero sentinel, so a new stack denies every operator until an operator is separately provisioned and the stack parameter is updated.
+Every `/api/control/*` route in `template.yaml` uses an API Gateway JWT authorizer for a separate operator Cognito user pool. The handler accepts only authorizer-verified access-token claims with the configured issuer, client ID, and an individually allowlisted operator `sub`. Clinic staff cookies and browser-supplied identity headers are not accepted. Mutations require the exact configured `Origin`; responses use `Cache-Control: no-store`. The pool requires MFA and permits admin-created users only. `AllowedOperatorSubs` accepts one to five comma-separated Cognito `sub` UUIDs with no spaces; its all-zero default is a deny-all sentinel until real operators are separately provisioned and the parameter is updated. It does not create operator credentials or grant access by Cognito group membership alone.
 
-The intended Control Panel UI is a **separate app** on its own origin. No login UI or operator invitation workflow is in this slice. MFA is required in the declared operator pool, but no operator account is created by the template. The Lambda's DynamoDB IAM policy is scoped to clinic and audit partition keys of the auth table, and it receives only `AdminGetUser` for the clinic staff user pool. No Scan, clinical-record table, credential issuance, password setting, or email permission is granted.
+The intended frontend uses Cognito managed login with authorization-code PKCE and a public, no-secret client. Its callback is `${PublicOrigin}/control/callback`, logout return is `${PublicOrigin}/control/`, and its access token stays in memory. No token-paste UI or operator-session endpoint is provided. For staging, the Control Panel static app is served under `/control/*` on the configured CloudFront host; a separate, no-cache `/api/control/*` behavior forwards `Authorization`, `Origin`, and `Content-Type` to this API. The app is logically separate from the Clinic App; a second CloudFront distribution is not required for this staging path design. CloudFront and static assets have not been configured here.
 
-## API routes
+## API contract
 
-All paths start with `/api/control`, require a valid platform-operator access token, and return JSON.
+All JSON requests use `Content-Type: application/json`. All routes require the operator Bearer access token. Mutations also require the exact configured `Origin`. A stale version or uniqueness conflict returns `409`; refresh before retrying. Directory results contain at most 20 records and an opaque signed `nextCursor`; pass it back with the same filter and scope. No table scans or aggregate counts are used.
 
-| Route | Input / result |
+| Route | Body or result |
 | --- | --- |
-| `POST /clinics` | `{slug,displayName}`. Creates an **inactive** clinic and all-disabled entitlements, version 1. |
-| `GET /clinics/<slug>` | Clinic status and entitlements; no patient data. |
-| `POST /clinics/<slug>/staff` | `{username,cognitoUsername,displayName,role}`. Looks up an **already provisioned, active, confirmed** Cognito staff identity and writes a clinic membership. Does not create credentials. |
-| `GET /clinics/<slug>/staff/<username>` | Membership's public fields, excluding Cognito `sub`. |
-| `PATCH /clinics/<slug>/staff/<username>` | Full replacement `{expectedVersion,displayName,role,active}`. Suspension/role changes are visible to Green's auth service on its next membership check. Disable an active clinic before suspending or demoting one of its active clinic admins. |
-| `PUT /clinics/<slug>/modules` | Full replacement `{expectedVersion,modules}` with exactly the eight boolean module keys in `src/core.ts`. |
-| `PATCH /clinics/<slug>/state` | `{expectedVersion,active,adminUsername}`. Activation requires an active `clinic_admin` membership; disabling uses `adminUsername:null`. |
+| `POST /api/control/customers` | `{displayName}` returns `201 {customer:{id,displayName,createdAt,version}}`. |
+| `GET /api/control/customers?prefix=&cursor=` | `{items:Customer[],nextCursor}`; case-normalized name prefix. |
+| `GET /api/control/customers/:id` | `{customer}`. |
+| `POST /api/control/customers/:id/branches` | `{slug,branchName,displayName}` returns `201 {branch,entitlements}`. New branch is inactive, with all eight modules disabled. |
+| `GET /api/control/customers/:id/branches?cursor=` | `{items:Branch[],nextCursor}` in branch-name order. |
+| `GET /api/control/customers/:id/branches/:slug` | `{branch,entitlements}`; branch must belong to that customer. |
+| `GET /api/control/branches?prefix=&cursor=` | `{items:Branch[],nextCursor}` in globally unique slug order. |
+| `GET /api/control/branches/:slug` | `{branch,entitlements}`. |
+| `GET /api/control/clinics/:slug` | `{clinic,entitlements}`. Also permits reviewing an unowned legacy clinic before adoption. |
+| `POST /api/control/customers/:id/branches/adopt` | Reviewed legacy adoption described below; returns `{branch,entitlements}` without changing existing slug, staff, active state, or enabled modules. |
+| `POST /api/control/clinics/:slug/staff` | `{username,cognitoUsername,displayName,role}` links an already provisioned, active, confirmed Cognito identity; returns `{staff}` without its `sub`. It does not create credentials or send invitations. |
+| `GET /api/control/clinics/:slug/staff?cursor=` | `{items:Staff[],nextCursor}`; 20 at most. |
+| `GET /api/control/clinics/:slug/staff/:username` | `{staff}`. |
+| `PATCH /api/control/clinics/:slug/staff/:username` | Full replacement `{expectedVersion,displayName,role,active}` returns `{staff}`. Disable an active clinic before demoting or suspending one of its active clinic admins. |
+| `PUT /api/control/clinics/:slug/modules` | Full replacement `{expectedVersion,modules}` returns `{entitlements}`; all eight boolean keys required. |
+| `PATCH /api/control/clinics/:slug/state` | `{expectedVersion,active,adminUsername}` returns `{clinic}`. Activation requires an active `clinic_admin`; use `adminUsername:null` when disabling. |
 
-The client must refresh and retry on `409` version conflicts. No route lists all clinics or all staff yet; this avoids a broad scan and keeps the first backend slice small. Staff usernames are lowercase and unique **within a clinic**. Slugs are lowercase and unique across clinics.
+Supported staff roles are `clinic_admin`, `doctor`, `receptionist`, `nurse`, `lab_tech`, `billing`, and `pharmacist`. The eight module keys are `patient_intake`, `appointments`, `vitals`, `consultations`, `prescriptions`, `lab_reports`, `billing`, and `email_notifications`. `vitals` and `prescriptions` require `consultations` in the replacement map. This is only a Control Panel validation rule: the current Clinic App workflow enforces `patient_intake`, `appointments`, `consultations`, and `billing`. Prescription handoff/email use the `consultations` gate plus role and separate email environment guards; the `prescriptions` and `email_notifications` switches are stored but not yet independently enforced. Do not present all eight switches as effective to a customer until their consumers enforce them.
 
-## Contract with Clinic App authentication
+## Data and legacy Goodwell adoption
 
-This service writes the exact shared records consumed by `services/clinic-auth-aws` in its `AuthTable`:
+The existing clinic-auth DynamoDB table remains the auth/entitlement table. The service adds `CUSTOMER#<UUID>/META`, a bounded `CONTROL#CUSTOMERS` name directory, a unique `CUSTOMER#<id>/BRANCH#<normalized branchName>` row, and a `CONTROL#BRANCHES/SLUG#<slug>` directory. Existing `CLINIC#<slug>/META`, `STAFF#<username>`, and `ENTITLEMENTS` records stay at their original keys. The ENTITLEMENTS record stores a nested `modules` map, matching the current workflow reader. Every successful change writes an operational `AUDIT#...` item in the same conditional transaction. Directory state and clinic state change in one transaction. No clinical table permission, `Scan`, credential-creation permission, SES permission, or deployment is included.
 
-| DynamoDB key | Required fields consumed by Green | Black-owned addition |
-| --- | --- | --- |
-| `pk=CLINIC#<slug>, sk=META` | `slug`, `displayName`, `active` | numeric `version` |
-| `pk=CLINIC#<slug>, sk=STAFF#<username>` | `clinicSlug`, `username`, `cognitoUsername`, `sub`, `displayName`, `role`, `active` | numeric `version` |
-| `pk=CLINIC#<slug>, sk=ENTITLEMENTS` | Not yet read by Green | `clinicSlug`, boolean `modules` map, numeric `version` |
-| `pk=AUDIT#<slug>, sk=<UTC timestamp>#<UUID>` | Not read by Green | immutable operator change record |
+For an already seeded clinic such as Goodwell, first read `GET /api/control/clinics/goodwell` and review the exact current display name, active flag, clinic version, entitlement version, and all eight module booleans. Create the owning customer, then call `POST /api/control/customers/:id/branches/adopt` with the reviewed snapshot:
 
-The `sub` is read from `AdminGetUser`, never supplied in the request body. `role` is restricted to the exact six roles in Green's authentication service. Green's current session endpoint rechecks clinic and membership records, so deactivation and staff suspension revoke access on the next check. **Green's auth service does not enforce module entitlements**; every future clinical API must read the entitlement record and authorize the module server-side. The Control Panel operator is not automatically a clinic staff member and has no clinical-record access.
+```json
+{
+  "slug": "goodwell",
+  "branchName": "Main",
+  "expectedDisplayName": "Goodwell Clinic",
+  "expectedActive": true,
+  "expectedClinicVersion": 1,
+  "expectedEntitlementsVersion": 1,
+  "expectedModules": {
+    "patient_intake": true,
+    "appointments": true,
+    "vitals": false,
+    "consultations": true,
+    "prescriptions": false,
+    "lab_reports": false,
+    "billing": true,
+    "email_notifications": false
+  }
+}
+```
 
-Conditional DynamoDB transactions write each state change and its audit item atomically, with optimistic version checks. This is an append-only operational audit foundation, not yet a complete regulatory audit or restore plan. Existing manually seeded clinics without `version` and `ENTITLEMENTS` records require a reviewed migration before this Control Panel can manage them.
+These values are illustrative, not a claim about the live Goodwell record. Use the actual reviewed response. Adoption rejects a changed snapshot, a missing entitlement record, an already owned clinic, or an occupied customer branch name; it never silently remaps the clinic. It preserves existing staff and active status. Versionless legacy clinic/entitlement records read as version 1 and are stamped with version 1 during adoption. Versionless legacy staff also read as version 1; their first conditional staff update writes version 2, then later updates require the exact stored version. No migration is automatic and no AWS state has been touched.
 
-## Local verification and deployment limits
+## Verification and integration limits
 
-Run source-level tests with Node 24: `node --experimental-strip-types --test test/*.test.mjs`. After dependencies are installed, run `pnpm typecheck` and `sam validate` from this directory; neither the concrete AWS adapter nor SAM transform has been verified against AWS yet. The template needs the clinic-auth stack's table and staff pool outputs plus the intended CloudFront origin. A future no-cache CloudFront `/api/control/*` behavior must forward `Authorization`, `Origin`, and `Content-Type` to this API and keep it separate from Clinic App auth routes. Deploy only after reviewing cost, IAM, CloudFront routing, operator sign-in and MFA setup, audit retention, and synthetic data. This backend does not make the product safe for real clinic staff or patient data.
+With Node 24 and dependencies installed, run `node --experimental-transform-types --test test/*.test.mjs` (or `pnpm test`), then `pnpm typecheck` and `sam validate`. Source and AWS-adapter tests use stubs; they do not create AWS resources. The stack requires the clinic-auth table name and staff pool ID/ARN, exact CloudFront `PublicOrigin`, an explicit `AllowedOperatorSubs` list, and a random `CursorSigningKey` of at least 32 characters. The staff pool must already contain any clinic identities operators intend to link. To remove an operator, update the stack parameter to omit that `sub`; existing access tokens then fail the handler allowlist on the next API call.
 
-AWS references: [HTTP API JWT authorizer in SAM](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/serverless-controlling-access-to-apis-oauth2-authorizer.html), [DynamoDB transaction IAM](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis-iam.html), [DynamoDB transaction atomicity](https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_TransactWriteItems.html).
+This branch is still separate from the latest Clinic App auth/workflow code. Its pharmacist role and entitlements must be reconciled with that current code before deployment; the older auth service in this checkout is not proof of pharmacist login. Operator sign-in, CloudFront behaviors, staff credential provisioning, audit retention, and a synthetic end-to-end staging test remain integration work. No real patient data should be used for this unconnected slice.
+
+AWS references: [Cognito managed login/domain](https://docs.aws.amazon.com/cognito/latest/developerguide/cognito-user-pools-assign-domain-prefix.html), [SAM HTTP API JWT authorization](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/serverless-controlling-access-to-apis-oauth2-authorizer.html), [DynamoDB transaction atomicity](https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_TransactWriteItems.html).

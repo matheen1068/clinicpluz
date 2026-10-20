@@ -3,6 +3,7 @@ import type { HttpInput, HttpResult } from './core.js';
 export interface HttpApiEvent {
   version?: string;
   rawPath?: string;
+  rawQueryString?: string;
   headers?: Record<string, string | undefined>;
   body?: string;
   isBase64Encoded?: boolean;
@@ -22,6 +23,7 @@ export function fromHttpApiEvent(event: HttpApiEvent): HttpInput | null {
   }
   return {
     method: event.requestContext.http.method.toUpperCase(), path: event.rawPath,
+    queryString: event.rawQueryString ?? '',
     headers, body: event.body, isBase64Encoded: event.isBase64Encoded,
     verifiedJwtClaims: event.requestContext.authorizer?.jwt?.claims,
   };

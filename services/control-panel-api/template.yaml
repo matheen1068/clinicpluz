@@ -20,11 +20,17 @@ Parameters:
   StaffUserPoolArn:
     Type: String
     Description: ARN of the same clinic staff user pool
-  AllowedOperatorSub:
+  AllowedOperatorSubs:
     Type: String
-    Description: Explicit allowlisted sub of a separately provisioned platform operator
+    Description: Comma-separated Cognito sub UUIDs for up to five separately provisioned platform operators
     Default: '00000000-0000-0000-0000-000000000000' # Deny all until an operator is created and this parameter is updated.
-    AllowedPattern: '[0-9a-fA-F-]{36}'
+    MaxLength: 184
+    AllowedPattern: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(,[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}){0,4}'
+  CursorSigningKey:
+    Type: String
+    NoEcho: true
+    MinLength: 32
+    Description: Random secret for binding directory pagination cursors to their filter and scope
 
 Resources:
   OperatorUserPool:
@@ -50,7 +56,18 @@ Resources:
       ClientName: !Sub clinicpluz-${StageName}-operators-client
       GenerateSecret: false
       PreventUserExistenceErrors: ENABLED
-      ExplicitAuthFlows: [ALLOW_USER_PASSWORD_AUTH]
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows: [code]
+      AllowedOAuthScopes: [openid]
+      CallbackURLs: [!Sub '${PublicOrigin}/control/callback']
+      LogoutURLs: [!Sub '${PublicOrigin}/control/']
+      SupportedIdentityProviders: [COGNITO]
+
+  OperatorPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Sub clinicpluz-${AWS::AccountId}-${StageName}-operators
+      UserPoolId: !Ref OperatorUserPool
 
   ControlApi:
     Type: AWS::Serverless::HttpApi
@@ -85,15 +102,16 @@ Resources:
           PUBLIC_ORIGIN: !Ref PublicOrigin
           OPERATOR_ISSUER: !Sub https://cognito-idp.${AWS::Region}.${AWS::URLSuffix}/${OperatorUserPool}
           OPERATOR_CLIENT_ID: !Ref OperatorPoolClient
-          ALLOWED_OPERATOR_SUBS: !Ref AllowedOperatorSub
+          ALLOWED_OPERATOR_SUBS: !Ref AllowedOperatorSubs
+          CURSOR_SIGNING_KEY: !Ref CursorSigningKey
       Policies:
         - Statement:
             - Effect: Allow
-              Action: ['dynamodb:GetItem']
+              Action: ['dynamodb:GetItem', 'dynamodb:Query']
               Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AuthTableName}
               Condition:
                 'ForAllValues:StringLike':
-                  'dynamodb:LeadingKeys': ['CLINIC#*']
+                  'dynamodb:LeadingKeys': ['CLINIC#*', 'CUSTOMER#*', 'CONTROL#CUSTOMERS', 'CONTROL#BRANCHES']
                 'Null':
                   'dynamodb:LeadingKeys': 'false'
             - Effect: Allow
@@ -101,16 +119,40 @@ Resources:
               Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AuthTableName}
               Condition:
                 'ForAllValues:StringLike':
-                  'dynamodb:LeadingKeys': ['CLINIC#*', 'AUDIT#*']
+                  'dynamodb:LeadingKeys': ['CLINIC#*', 'CUSTOMER#*', 'CONTROL#CUSTOMERS', 'CONTROL#BRANCHES', 'AUDIT#*']
                 'Null':
                   'dynamodb:LeadingKeys': 'false'
             - Effect: Allow
               Action: ['cognito-idp:AdminGetUser']
               Resource: !Ref StaffUserPoolArn
       Events:
-        CreateClinic:
+        CreateCustomer:
           Type: HttpApi
-          Properties: { ApiId: !Ref ControlApi, Path: '/api/control/clinics', Method: POST, PayloadFormatVersion: '2.0' }
+          Properties: { ApiId: !Ref ControlApi, Path: '/api/control/customers', Method: POST, PayloadFormatVersion: '2.0' }
+        ListCustomers:
+          Type: HttpApi
+          Properties: { ApiId: !Ref ControlApi, Path: '/api/control/customers', Method: GET, PayloadFormatVersion: '2.0' }
+        GetCustomer:
+          Type: HttpApi
+          Properties: { ApiId: !Ref ControlApi, Path: '/api/control/customers/{customerId}', Method: GET, PayloadFormatVersion: '2.0' }
+        CreateBranch:
+          Type: HttpApi
+          Properties: { ApiId: !Ref ControlApi, Path: '/api/control/customers/{customerId}/branches', Method: POST, PayloadFormatVersion: '2.0' }
+        AdoptLegacyBranch:
+          Type: HttpApi
+          Properties: { ApiId: !Ref ControlApi, Path: '/api/control/customers/{customerId}/branches/adopt', Method: POST, PayloadFormatVersion: '2.0' }
+        ListCustomerBranches:
+          Type: HttpApi
+          Properties: { ApiId: !Ref ControlApi, Path: '/api/control/customers/{customerId}/branches', Method: GET, PayloadFormatVersion: '2.0' }
+        GetCustomerBranch:
+          Type: HttpApi
+          Properties: { ApiId: !Ref ControlApi, Path: '/api/control/customers/{customerId}/branches/{slug}', Method: GET, PayloadFormatVersion: '2.0' }
+        ListBranches:
+          Type: HttpApi
+          Properties: { ApiId: !Ref ControlApi, Path: '/api/control/branches', Method: GET, PayloadFormatVersion: '2.0' }
+        GetBranch:
+          Type: HttpApi
+          Properties: { ApiId: !Ref ControlApi, Path: '/api/control/branches/{slug}', Method: GET, PayloadFormatVersion: '2.0' }
         GetClinic:
           Type: HttpApi
           Properties: { ApiId: !Ref ControlApi, Path: '/api/control/clinics/{slug}', Method: GET, PayloadFormatVersion: '2.0' }
@@ -123,6 +165,9 @@ Resources:
         CreateStaff:
           Type: HttpApi
           Properties: { ApiId: !Ref ControlApi, Path: '/api/control/clinics/{slug}/staff', Method: POST, PayloadFormatVersion: '2.0' }
+        ListStaff:
+          Type: HttpApi
+          Properties: { ApiId: !Ref ControlApi, Path: '/api/control/clinics/{slug}/staff', Method: GET, PayloadFormatVersion: '2.0' }
         GetStaff:
           Type: HttpApi
           Properties: { ApiId: !Ref ControlApi, Path: '/api/control/clinics/{slug}/staff/{username}', Method: GET, PayloadFormatVersion: '2.0' }
@@ -154,3 +199,9 @@ Outputs:
     Value: !Ref OperatorUserPool
   OperatorClientId:
     Value: !Ref OperatorPoolClient
+  OperatorIssuer:
+    Value: !Sub https://cognito-idp.${AWS::Region}.${AWS::URLSuffix}/${OperatorUserPool}
+  OperatorHostedDomain:
+    Value: !Sub https://${OperatorPoolDomain}.auth.${AWS::Region}.amazoncognito.com
+  OperatorCallbackUrl:
+    Value: !Sub '${PublicOrigin}/control/callback'
