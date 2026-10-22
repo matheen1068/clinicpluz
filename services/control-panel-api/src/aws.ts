@@ -5,7 +5,7 @@ import { CognitoIdentityProviderClient, AdminGetUserCommand } from '@aws-sdk/cli
 import {
   MODULES, ROLES, type AuditEvent, type ClinicRecord, type ControlRepository,
   type BranchRecord, type CustomerRecord, type Entitlements, type EntitlementsRecord, type Page,
-  type Role, type StaffIdentity, type StaffRecord,
+  type Role, type StaffIdentity, type StaffRecord, type DiagnosticChangePage,
 } from './core.js';
 
 type Item = Record<string, AttributeValue>;
@@ -13,6 +13,10 @@ const s = (value: string): AttributeValue => ({ S: value });
 const n = (value: number): AttributeValue => ({ N: String(value) });
 const b = (value: boolean): AttributeValue => ({ BOOL: value });
 const nameKey = (value: string): string => value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('en-US');
+const DIAGNOSTIC_ACTIONS = new Set([
+  'branch.created', 'branch.legacy_adopted', 'clinic.state_changed',
+  'staff.created', 'staff.updated', 'modules.replaced',
+]);
 function string(item: Item, field: string): string {
   const value = (item[field] as { S?: string } | undefined)?.S;
   if (!value) throw new Error(`Invalid ${field}`);
@@ -273,6 +277,29 @@ export class DynamoControlRepository implements ControlRepository {
     if (!item) return null;
     if (string(item, 'clinicSlug') !== slug) throw new Error('Entitlements key mismatch');
     return { clinicSlug: slug, modules: parseModules(item), version: recordVersion(item) };
+  }
+  async listRecentChanges(slug: string, from: string, to: string): Promise<DiagnosticChangePage> {
+    const pk = `AUDIT#${slug}`;
+    const result = await this.client.send(new QueryCommand({
+      TableName: this.table, ConsistentRead: true,
+      KeyConditionExpression: 'pk = :pk AND sk BETWEEN :from AND :to',
+      ExpressionAttributeValues: { ':pk': s(pk), ':from': s(from), ':to': s(`${to}~`) },
+      ProjectionExpression: 'pk, sk, #at, #action',
+      ExpressionAttributeNames: { '#at': 'at', '#action': 'action' },
+      ScanIndexForward: false, Limit: 21,
+    }));
+    const rows = result.Items ?? [];
+    if (rows.length > 21) throw new Error('Invalid audit page');
+    const items = rows.map((item) => {
+      const key = string(item, 'sk');
+      const at = string(item, 'at');
+      const action = string(item, 'action');
+      const id = key.slice(at.length + 1);
+      if (string(item, 'pk') !== pk || !key.startsWith(`${at}#`) || at < from || at > to ||
+          !/^[0-9a-f-]{36}$/i.test(id)) throw new Error('Invalid audit record');
+      return { id, at, action: DIAGNOSTIC_ACTIONS.has(action) ? action : 'other_change' };
+    }).slice(0, 20);
+    return { items, hasMore: rows.length > 20 || Boolean(result.LastEvaluatedKey) };
   }
   async createStaff(staff: StaffRecord, audit: AuditEvent): Promise<boolean> {
     return this.transact([

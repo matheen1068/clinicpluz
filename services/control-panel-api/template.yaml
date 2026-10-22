@@ -121,7 +121,7 @@ Resources:
               Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AuthTableName}
               Condition:
                 'ForAllValues:StringLike':
-                  'dynamodb:LeadingKeys': ['CLINIC#*', 'CUSTOMER#*', 'CONTROL#CUSTOMERS', 'CONTROL#BRANCHES']
+                  'dynamodb:LeadingKeys': ['CLINIC#*', 'CUSTOMER#*', 'CONTROL#CUSTOMERS', 'CONTROL#BRANCHES', 'AUDIT#*']
                 'Null':
                   'dynamodb:LeadingKeys': 'false'
             - Effect: Allow
@@ -163,6 +163,9 @@ Resources:
         GetBranch:
           Type: HttpApi
           Properties: { ApiId: !Ref ControlApi, Path: '/api/control/branches/{slug}', Method: GET, PayloadFormatVersion: '2.0' }
+        GetBranchDiagnostics:
+          Type: HttpApi
+          Properties: { ApiId: !Ref ControlApi, Path: '/api/control/branches/{slug}/diagnostics', Method: GET, PayloadFormatVersion: '2.0' }
         GetClinic:
           Type: HttpApi
           Properties: { ApiId: !Ref ControlApi, Path: '/api/control/clinics/{slug}', Method: GET, PayloadFormatVersion: '2.0' }

@@ -102,6 +102,67 @@ test('authorization denial stays distinct from a retriable service error', async
   } finally { restore(); }
 });
 
+test('diagnostics use operator bearer auth and expose only the bounded safe projection', async () => {
+  const snapshot = {
+    branch, checkedAt: '2026-10-22T08:00:00.000Z',
+    configuration: {
+      entitlements: { state: 'present', version: 2, enabledModules: ['appointments'] },
+      staff: { sampledCount: 3, hasMore: false, activeAdmin: 'present' },
+    },
+    recentChanges: { from: '2026-10-15T08:00:00.000Z', to: '2026-10-22T08:00:00.000Z',
+      items: [{ id: 'audit-1', at: '2026-10-20T08:00:00.000Z', action: 'modules.replaced', patientName: 'must not leak' }], hasMore: false },
+    telemetry: { clinicAuth: { state: 'not_instrumented' }, clinicWorkflow: { state: 'not_instrumented' }, emailDelivery: { state: 'not_instrumented' } },
+    patientName: 'must not leak',
+  };
+  const restore = mockFetch(async (path, init) => {
+    assert.equal(path, '/api/control/branches/goodwell-central/diagnostics');
+    assert.equal(init.headers.Authorization, 'Bearer operator-access');
+    assert.equal(init.credentials, 'omit');
+    assert.equal(init.cache, 'no-store');
+    return Response.json(snapshot);
+  });
+  try {
+    const result = await new ControlApi(() => 'operator-access').diagnostics(branch.slug);
+    assert.equal(result.configuration.staff.sampledCount, 3);
+    assert.equal(result.telemetry.clinicWorkflow.state, 'not_instrumented');
+    assert.equal(result.recentChanges.items[0].action, 'modules.replaced');
+    assert.equal('patientName' in result, false);
+    assert.equal('patientName' in result.recentChanges.items[0], false);
+  } finally { restore(); }
+});
+
+test('diagnostics directory searches bounded branch records without clinic credentials', async () => {
+  const restore = mockFetch(async (path, init) => {
+    assert.equal(path, '/api/control/branches?prefix=good&cursor=next-page');
+    assert.equal(init.headers.Authorization, 'Bearer operator-access');
+    assert.equal(init.credentials, 'omit');
+    return Response.json({ items: [branch], nextCursor: null });
+  });
+  try {
+    const result = await new ControlApi(() => 'operator-access').branchDirectory('good', 'next-page');
+    assert.equal(result.items[0].customerId, customer.id);
+  } finally { restore(); }
+});
+
+test('diagnostics reject a wrong branch, fabricated telemetry, and malformed bounds', async () => {
+  const valid = {
+    branch, checkedAt: '2026-10-22T08:00:00.000Z',
+    configuration: { entitlements: { state: 'missing', version: null, enabledModules: [] },
+      staff: { sampledCount: 20, hasMore: true, activeAdmin: 'unknown' } },
+    recentChanges: { from: '2026-10-15T08:00:00.000Z', to: '2026-10-22T08:00:00.000Z', items: [], hasMore: false },
+    telemetry: { clinicAuth: { state: 'not_instrumented' }, clinicWorkflow: { state: 'not_instrumented' }, emailDelivery: { state: 'not_instrumented' } },
+  };
+  for (const invalid of [
+    { ...valid, branch: { ...branch, slug: 'another-clinic' } },
+    { ...valid, telemetry: { ...valid.telemetry, clinicWorkflow: { state: 'healthy' } } },
+    { ...valid, configuration: { ...valid.configuration, staff: { sampledCount: 2000, hasMore: false, activeAdmin: 'missing' } } },
+  ]) {
+    const restore = mockFetch(async () => Response.json(invalid));
+    try { await assert.rejects(new ControlApi(() => 'operator-access').diagnostics(branch.slug), ControlApiError); }
+    finally { restore(); }
+  }
+});
+
 test('OAuth configuration only accepts a secure hosted domain and same-origin callbacks', () => {
   const location = { protocol: 'https:', origin: 'https://staging.example.test', hostname: 'staging.example.test' };
   const valid = { VITE_OPERATOR_AUTH_DOMAIN: 'https://operator.auth.ap-south-1.amazoncognito.com', VITE_OPERATOR_CLIENT_ID: 'abcdef0123456789', VITE_OPERATOR_REDIRECT_URI: 'https://staging.example.test/control/callback', VITE_OPERATOR_LOGOUT_URI: 'https://staging.example.test/control/' };

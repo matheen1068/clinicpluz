@@ -1,0 +1,147 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Separate synthetic staging hosting for the ClinicPluz operator Control Panel
+
+Parameters:
+  StageName:
+    Type: String
+    Default: staging
+    AllowedPattern: '[a-z][a-z0-9-]{1,30}'
+  ControlApiDomain:
+    Type: String
+    Default: ''
+    Description: API Gateway hostname only, without https or a path; leave empty for the first deployment
+    AllowedPattern: '(^$|^[a-z0-9-]+\.execute-api\.[a-z0-9-]+\.amazonaws\.com$)'
+
+Conditions:
+  HasControlApi: !Not [!Equals [!Ref ControlApiDomain, '']]
+
+Resources:
+  WebBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub clinicpluz-${StageName}-control-web-${AWS::AccountId}-${AWS::Region}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      VersioningConfiguration: { Status: Enabled }
+
+  WebOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub clinicpluz-${StageName}-control-web-${AWS::AccountId}
+        Description: Sign Control Panel S3 origin requests
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  WebCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: !Sub clinicpluz-${StageName}-control-static-${AWS::AccountId}
+        Comment: Honor origin Cache-Control for the Control Panel HTML and hashed assets
+        DefaultTTL: 0
+        MinTTL: 0
+        MaxTTL: 31536000
+        ParametersInCacheKeyAndForwardedToOrigin:
+          EnableAcceptEncodingBrotli: true
+          EnableAcceptEncodingGzip: true
+          CookiesConfig: { CookieBehavior: none }
+          HeadersConfig: { HeaderBehavior: none }
+          QueryStringsConfig: { QueryStringBehavior: none }
+
+  WebSpaRewrite:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub clinicpluz-${StageName}-control-spa-${AWS::AccountId}
+      AutoPublish: true
+      FunctionConfig:
+        Comment: Rewrite only Control Panel client routes to its own index
+        Runtime: cloudfront-js-1.0
+      FunctionCode: |
+        function handler(event) {
+          var request = event.request;
+          var uri = request.uri;
+          if (uri === '/control' || uri === '/control/' ||
+              uri === '/control/callback' || uri === '/control/callback/') {
+            request.uri = '/control/index.html';
+          }
+          return request;
+        }
+
+  WebDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: !Sub ClinicPluz ${StageName} Control Panel, isolated from Clinic App CDN
+        Enabled: true
+        DefaultRootObject: control/index.html
+        HttpVersion: http2
+        Origins:
+          - Id: ControlWebS3
+            DomainName: !GetAtt WebBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt WebOriginAccessControl.Id
+            S3OriginConfig: { OriginAccessIdentity: '' }
+          - !If
+            - HasControlApi
+            - Id: ControlApiGateway
+              DomainName: !Ref ControlApiDomain
+              CustomOriginConfig:
+                OriginProtocolPolicy: https-only
+            - !Ref AWS::NoValue
+        DefaultCacheBehavior:
+          TargetOriginId: ControlWebS3
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD]
+          Compress: true
+          CachePolicyId: !Ref WebCachePolicy
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt WebSpaRewrite.FunctionARN
+        CacheBehaviors: !If
+          - HasControlApi
+          - - PathPattern: '/api/control/*'
+              TargetOriginId: ControlApiGateway
+              ViewerProtocolPolicy: https-only
+              AllowedMethods: [GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE]
+              CachedMethods: [GET, HEAD]
+              Compress: false
+              CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+              OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+          - !Ref AWS::NoValue
+        ViewerCertificate: { CloudFrontDefaultCertificate: true }
+
+  WebBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowOnlyControlDistribution
+            Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: s3:GetObject
+            Resource: !Sub ${WebBucket.Arn}/*
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${WebDistribution}
+
+Outputs:
+  WebBucketName:
+    Value: !Ref WebBucket
+  DistributionId:
+    Value: !Ref WebDistribution
+  PublicOrigin:
+    Value: !Sub https://${WebDistribution.DomainName}
+  PublicUrl:
+    Value: !Sub https://${WebDistribution.DomainName}/control/

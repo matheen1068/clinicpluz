@@ -269,3 +269,40 @@ test('versionless legacy staff can be updated once, then require an exact versio
   assert.equal(second.ExpressionAttributeValues[':expected'].N, '2');
   assert.equal(second.ExpressionAttributeValues[':next'].N, '3');
 });
+
+test('diagnostics query only a bounded branch audit window and project safe fields', async () => {
+  const from = '2026-10-13T08:00:00.000Z';
+  const id = (index) => `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`;
+  let rows = Array.from({ length: 21 }, (_, index) => ({
+    pk: s('AUDIT#goodwell'), sk: s(`${AT}#${id(index)}`), at: s(AT),
+    action: s(index === 0 ? 'private action payload' : 'staff.updated'),
+    actorSub: s('private-operator'), target: s('private-staff'),
+  }));
+  const seen = [];
+  const repo = new DynamoControlRepository({ async send(command) {
+    assert.equal(command.constructor.name, 'QueryCommand');
+    seen.push(command.input);
+    return { Items: rows };
+  } }, TABLE);
+  const page = await repo.listRecentChanges('goodwell', from, AT);
+  assert.equal(page.items.length, 20);
+  assert.equal(page.hasMore, true);
+  assert.deepEqual(page.items[0], { id: id(0), at: AT, action: 'other_change' });
+  assert.equal(JSON.stringify(page).includes('private-'), false);
+  assert.equal(seen[0].TableName, TABLE);
+  assert.equal(seen[0].ConsistentRead, true);
+  assert.equal(seen[0].ScanIndexForward, false);
+  assert.equal(seen[0].Limit, 21);
+  assert.equal(seen[0].KeyConditionExpression, 'pk = :pk AND sk BETWEEN :from AND :to');
+  assert.deepEqual(seen[0].ExpressionAttributeValues,
+    { ':pk': s('AUDIT#goodwell'), ':from': s(from), ':to': s(`${AT}~`) });
+  assert.equal(seen[0].ProjectionExpression, 'pk, sk, #at, #action');
+  assert.deepEqual(seen[0].ExpressionAttributeNames, { '#at': 'at', '#action': 'action' });
+
+  rows = [{ ...rows[0], pk: s('AUDIT#blesswell') }];
+  await assert.rejects(() => repo.listRecentChanges('goodwell', from, AT), /Invalid audit record/);
+  rows = [{ ...rows[0], pk: s('AUDIT#goodwell'), at: s('2026-09-01T08:00:00.000Z') }];
+  await assert.rejects(() => repo.listRecentChanges('goodwell', from, AT), /Invalid audit record/);
+  rows = [];
+  assert.deepEqual(await repo.listRecentChanges('goodwell', from, AT), { items: [], hasMore: false });
+});

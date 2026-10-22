@@ -2,7 +2,7 @@
 
 ## Purpose and boundary
 
-The Control Panel is the platform team's workspace for onboarding and operating customer organizations and their clinic branches. Clinic App staff use a separate application for appointments, consultations, prescriptions, pharmacy handoff, and patient checkout. Platform operator access does not grant access to patient or clinical records.
+The Control Panel is the platform team's workspace for onboarding and operating customer organizations and their clinic branches. Clinic App staff use a separate application for appointments, consultations, prescriptions, pharmacy handoff, and patient checkout. Routine platform operator access does not grant access to patient or clinical records. A separately authorized, audited support workflow for one reported record may be designed later.
 
 The first release uses synthetic staging data. It must not be described as ready for real patient data until privacy, access review, audit, backup, retention, and operational controls are complete.
 
@@ -19,7 +19,7 @@ The first release uses synthetic staging data. It must not be described as ready
 2. Operator creates a customer, then an inactive branch and its initial settings. All modules begin disabled.
 3. Operator links an already provisioned and confirmed individual staff identity, assigns a branch role, and ensures there is an active clinic admin. Direct staff account creation/invitation is a follow-on workflow because the current Clinic App sign-in cannot complete Cognito's temporary-password challenge.
 4. Operator enables an approved module set and activates the branch after reviewing its setup. Existing sessions must honor subsequent suspension and entitlement changes through server-side checks.
-5. Operator can review customer/branch status, staff access, module settings, audit history, and aggregate operational health. Patient names, consultation notes, prescriptions, and clinical documents are outside routine Control Panel access.
+5. Operator can review customer/branch status, staff access, module settings, verified diagnostic checks, audit history, and aggregate operational health as each read API is implemented. Patient names, consultation notes, prescriptions, and clinical documents are outside routine Control Panel access.
 
 The platform team owns clinic and user creation in V1. Clinic admins do not receive Control Panel access. The first dashboard shows operational data only: setup, staff access, feature status, and verified record metadata. Aggregate system-health counts may be added when a dedicated read API exists. It does not show patient names or clinical records. Patient billing remains in the Clinic App. A future ClinicPluz subscription billing system is a separate product feature.
 
@@ -32,17 +32,17 @@ The platform team owns clinic and user creation in V1. Clinic admins do not rece
 | Branches | Create inactive, list/search, detail, unique branch name and clinic slug, activate/suspend | Self-service branch changes and owned-domain routing |
 | Staff | List, link confirmed identity, edit role and access within a branch | Safe invitation and credential lifecycle, cross-branch grants |
 | Modules | View and version-guard enabled modules; reject invalid dependencies | Plans, trials and scheduled changes |
-| Operations | Basic setup status; administrative changes append audit records | Audit viewer, health metrics, delivery outcomes, alerting and support tooling |
+| Operations and diagnostics | Verified setup checks; administrative changes append audit records; unknown runtime health is labeled uninstrumented | Sanitized service metrics, correlated failure events, delivery outcomes, alerting, and time-limited record support tooling |
 | Settings | Document the ownership and contract for hours, doctor schedules, fees and email configuration | Editable settings once the consuming Clinic App services support them |
 
 Supported clinic roles must match the Clinic App authentication service, including `pharmacist`. Module names and dependencies must match the services that enforce them; a Control Panel toggle alone cannot secure a feature.
 
 ## Engineering contract
 
-- Keep the Control Panel app and API separate from the Clinic App. A clinic staff session cannot authorize a platform operation.
+- Keep the Control Panel app and API separate from the Clinic App. A clinic staff session cannot authorize a platform operation. Host the operator app on its own CloudFront distribution and private S3 bucket, with its own deployment and cache invalidations. Until a domain is owned, use that distribution's own hostname and update operator login callbacks and allowed origins accordingly.
 - Reuse the existing clinic authentication record shape for branch membership and entitlements while adding customer/branch metadata through a reviewed migration. Preserve tenant partitioning and globally unique clinic slugs.
 - Authorize every control API server-side. Use conditional writes/version checks and append an audit event for administrative changes. Fail closed if operator identity or authorization cannot be verified.
-- Do not put patient-level data or clinical-table read permissions in the routine Control Panel service. If support access is ever needed, design a separate, explicit, time-limited approval workflow.
+- Do not put patient-level data or clinical-table read permissions in the routine Control Panel service. If support access is ever needed, design a separate, explicit, time-limited approval workflow and API.
 - Keep staging and production distinct. Do not deploy as part of routine implementation; review infrastructure, access, migration, and cost first.
 
 ## Release checkpoints
@@ -53,3 +53,5 @@ Supported clinic roles must match the Clinic App authentication service, includi
 4. Review the staging deployment and run a synthetic onboarding exercise before enabling it for operators.
 
 Open decisions for a later slice: what aggregate operational metrics operators need, whether staff may work across branches, how clinic-owned settings are delegated, and how platform subscription billing will work.
+
+See [Control Panel diagnostics design](CONTROL_DIAGNOSTICS_V1.md) for the evidence model and the separation between routine operational signals and exceptional record investigation. The independent hosting template and two-stage deployment order are in [the hosting guide](../infra/control-panel-hosting/README.md); validate the stack and test the completed route before release.

@@ -6,6 +6,8 @@ This is a separate platform-operator application for **synthetic staging data**.
 
 An allowlisted platform operator can view and search customer organizations, open each customer's branches, create a customer, create an inactive branch, link an already confirmed clinic staff identity, review or change branch staff membership, configure supported module flags, and activate or suspend a branch. The app shows real server status, versions, customer creation time, staff list, and module settings. It handles empty lists, loading, pagination, stale-write conflicts, API failure, expired sign-in and access denial.
 
+**Diagnostics** lets an operator search the branch directory by clinic slug and inspect one branch at a time. It reads the branch state, module record, a bounded first page of staff memberships, and up to 20 recent administrative changes from the previous seven days. A sampled staff count is never presented as a total. The screen identifies missing module records and shows clinic sign-in, workflow, and email-delivery telemetry as **Not instrumented**. It does not assert clinic runtime health or show patient names, clinical records, request bodies, or raw logs. Branch diagnostics also appear in the selected branch's Diagnostics tab. If the API is unavailable or the branch response does not match the selected customer, the view shows an error and no inferred status.
+
 The **Adopt existing clinic** action is only for an explicitly reviewed synthetic legacy clinic such as a seeded Goodwell tenant. The operator enters its known slug, inspects the server-returned name, status, versions and complete module map, then confirms the snapshot. The API conditionally associates it with a customer without changing its clinic slug, staff, active state or enabled modules. It never adopts a legacy clinic automatically.
 
 Staff linking does **not** create a Cognito identity or password. Provision and confirm the person in the clinic staff identity service first. A customer may have multiple branches; branch name is unique within its customer, and clinic slug is globally unique. Branch membership grants no access to another branch. The Control Panel operator identity is separate from clinic staff identity.
@@ -24,7 +26,7 @@ The Vite base is `/control/`. Host its built files so `/control/` and `/control/
 
 ## Current limits
 
-- The service does not expose audit-history or aggregate-health read endpoints; the Operations screen says so and shows only verified record metadata.
+- The Diagnostics endpoint exposes a bounded, branch-scoped projection of control-record checks and administrative audit actions. It does not provide clinic request errors, latency, booking/consultation/billing flow traces, or email delivery outcomes. Those remain explicitly uninstrumented until a sanitized telemetry source exists.
 - The current clinic workflow enforces `patient_intake`, `appointments`, `consultations` and `billing` entitlement flags. The other four flags remain visible but cannot be enabled in this UI until their consuming services enforce them. A toggle is never client-side authorization.
 - The current API links an already confirmed staff identity; staff invitation, credential issuance, and recovery remain outside this UI.
 - This is a synthetic staging slice. Privacy, audit review, backup, retention, and access controls need review before real clinic or patient data is used.

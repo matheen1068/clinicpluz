@@ -65,6 +65,12 @@ class MemoryRepository {
       (item) => `STAFF#${item.username}`);
   }
   async getEntitlements(slug) { return structuredClone(this.entitlements.get(slug) ?? null); }
+  async listRecentChanges(slug, from, to) {
+    const changes = this.audits.filter((event) => event.clinicSlug === slug && event.at >= from && event.at <= to)
+      .sort((a, b) => b.at.localeCompare(a.at) || b.id.localeCompare(a.id));
+    return { items: changes.slice(0, 20).map(({ id, at, action }) => ({ id, at, action })),
+      hasMore: changes.length > 20 };
+  }
   async createStaff(staff, audit) {
     if (!this.clinics.has(staff.clinicSlug) || this.staff.has(this.key(staff.clinicSlug, staff.username))) return false;
     this.staff.set(this.key(staff.clinicSlug, staff.username), structuredClone(staff));
@@ -241,6 +247,8 @@ test('customers own multiple branches; names are unique within a customer and sl
 test('branch detail fails closed when directory metadata disagrees with the canonical clinic', async () => {
   const { repo, call } = setup();
   const { customer } = await createCustomerAndBranch(call);
+  let diagnosticReads = 0;
+  repo.listRecentChanges = async () => { diagnosticReads++; return { items: [], hasMore: false }; };
   const getCustomerBranch = repo.getCustomerBranch.bind(repo);
   repo.getCustomerBranch = async (...args) => {
     const indexed = await getCustomerBranch(...args);
@@ -248,6 +256,71 @@ test('branch detail fails closed when directory metadata disagrees with the cano
   };
   assert.equal((await call('GET', `/api/control/customers/${customer.id}/branches/goodwell`)).status, 503);
   assert.equal((await call('GET', '/api/control/branches/goodwell')).status, 503);
+  assert.equal((await call('GET', '/api/control/branches/goodwell/diagnostics')).status, 503);
+  assert.equal(diagnosticReads, 0);
+});
+
+test('diagnostics show bounded branch setup and sanitized audit changes without invented telemetry', async () => {
+  const { repo, call } = setup();
+  const first = await createCustomerAndBranch(call, 'goodwell', 'Main');
+  await createCustomerAndBranch(call, 'blesswell', 'Main');
+  await call('POST', '/api/control/clinics/goodwell/staff', {
+    username: 'alice', cognitoUsername: 'confirmed-alice', displayName: 'Alice', role: 'clinic_admin',
+  });
+  repo.audits.push({ id: '11111111-1111-4111-8111-111111111111', clinicSlug: 'goodwell',
+    actorSub: 'private-operator', action: 'modules.replaced', target: 'private-target',
+    at: '2026-10-07T10:00:00.000Z', changes: { privateNote: 'never expose' } });
+  repo.audits.push({ id: '22222222-2222-4222-8222-222222222222', clinicSlug: 'goodwell',
+    actorSub: 'private-operator', action: 'staff.updated', target: 'private-target',
+    at: '2026-09-01T10:00:00.000Z', changes: { privateNote: 'never expose' } });
+  const result = await call('GET', '/api/control/branches/goodwell/diagnostics');
+  assert.equal(result.status, 200);
+  assert.equal(result.headers['cache-control'], 'no-store');
+  assert.equal(result.body.branch.customerId, first.customer.id);
+  assert.equal(result.body.checkedAt, '2026-10-08T10:00:00.000Z');
+  assert.deepEqual(result.body.configuration.entitlements,
+    { state: 'present', version: 1, enabledModules: [] });
+  assert.deepEqual(result.body.configuration.staff,
+    { sampledCount: 1, hasMore: false, activeAdmin: 'present' });
+  assert.equal(result.body.recentChanges.from, '2026-10-01T10:00:00.000Z');
+  assert.equal(result.body.recentChanges.to, result.body.checkedAt);
+  assert.equal(result.body.recentChanges.hasMore, false);
+  assert.ok(result.body.recentChanges.items.some((item) => item.action === 'modules.replaced'));
+  assert.ok(result.body.recentChanges.items.every((item) =>
+    Object.keys(item).sort().join(',') === 'action,at,id'));
+  assert.deepEqual(Object.values(result.body.telemetry), [
+    { state: 'not_instrumented' }, { state: 'not_instrumented' }, { state: 'not_instrumented' },
+  ]);
+  assert.equal(JSON.stringify(result.body).includes('private-'), false);
+  assert.equal(JSON.stringify(result.body).includes('never expose'), false);
+  assert.equal((await call('GET', '/api/control/branches/blesswell/diagnostics')).body.recentChanges.items
+    .some((item) => item.action === 'modules.replaced'), false);
+  assert.equal((await call('GET', '/api/control/branches/unknown/diagnostics')).status, 404);
+  assert.equal((await call('GET', '/api/control/branches/goodwell/diagnostics?window=all')).status, 400);
+  assert.equal((await call('GET', '/api/control/branches/goodwell/diagnostics', undefined,
+    { ...CLAIMS, sub: 'not-allowlisted' })).status, 403);
+});
+
+test('diagnostics report missing setup and unknown admin when bounded staff sample has more pages', async () => {
+  const { repo, call } = setup();
+  await createCustomerAndBranch(call);
+  repo.entitlements.delete('goodwell');
+  for (let index = 0; index < 21; index++) {
+    const username = `staff-${String(index).padStart(2, '0')}`;
+    repo.staff.set(repo.key('goodwell', username), { clinicSlug: 'goodwell', username,
+      cognitoUsername: username, sub: username, displayName: username,
+      role: index === 20 ? 'clinic_admin' : 'receptionist', active: true, version: 1 });
+  }
+  const result = await call('GET', '/api/control/branches/goodwell/diagnostics');
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body.configuration.entitlements,
+    { state: 'missing', version: null, enabledModules: [] });
+  assert.deepEqual(result.body.configuration.staff,
+    { sampledCount: 20, hasMore: true, activeAdmin: 'unknown' });
+  repo.staff.delete(repo.key('goodwell', 'staff-20'));
+  const complete = await call('GET', '/api/control/branches/goodwell/diagnostics');
+  assert.deepEqual(complete.body.configuration.staff,
+    { sampledCount: 20, hasMore: false, activeAdmin: 'missing' });
 });
 
 test('customer, branch and staff directories paginate with scoped signed cursors', async () => {

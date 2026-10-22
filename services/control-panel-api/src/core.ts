@@ -23,6 +23,8 @@ export interface AuditEvent {
   id: string; clinicSlug: string; actorSub: string; action: string; target: string;
   at: string; changes: Record<string, string | boolean | number>;
 }
+export interface DiagnosticChange { id: string; at: string; action: string }
+export interface DiagnosticChangePage { items: DiagnosticChange[]; hasMore: boolean }
 
 export interface ControlRepository {
   getCustomer(id: string): Promise<CustomerRecord | null>;
@@ -37,6 +39,7 @@ export interface ControlRepository {
   getStaff(slug: string, username: string): Promise<StaffRecord | null>;
   listStaff(slug: string, after: string | null): Promise<Page<StaffRecord>>;
   getEntitlements(slug: string): Promise<EntitlementsRecord | null>;
+  listRecentChanges(slug: string, from: string, to: string): Promise<DiagnosticChangePage>;
   createStaff(staff: StaffRecord, audit: AuditEvent): Promise<boolean>;
   replaceStaff(staff: StaffRecord, expectedVersion: number, requireInactiveClinic: boolean, audit: AuditEvent): Promise<boolean>;
   replaceEntitlements(record: EntitlementsRecord, expectedVersion: number, audit: AuditEvent): Promise<boolean>;
@@ -285,6 +288,37 @@ export function createControlApp(repo: ControlRepository, identity: StaffIdentit
           const modules = await repo.getEntitlements(branch.slug);
           if (!modules) throw new Error('Missing entitlements');
           return respond(200, { branch, entitlements: modules });
+        }
+
+        const diagnosticsRoute = /^\/api\/control\/branches\/([a-z0-9-]+)\/diagnostics$/.exec(input.path);
+        if (diagnosticsRoute && validSlug(diagnosticsRoute[1]) && input.method === 'GET') {
+          if (!query(input, [])) return respond(400, { error: 'Invalid diagnostics query' });
+          const slug = diagnosticsRoute[1];
+          const branch = await repo.getClinic(slug);
+          if (!branch?.customerId || !branch.branchName) return respond(404, { error: 'Branch not found' });
+          const indexed = await repo.getCustomerBranch(branch.customerId, nameKey(branch.branchName));
+          if (!matchesBranch(branch, indexed)) throw new Error('Broken branch index');
+          const checkedAt = now().toISOString();
+          const from = new Date(Date.parse(checkedAt) - 7 * 24 * 60 * 60 * 1000).toISOString();
+          const [modules, staff, recentChanges] = await Promise.all([
+            repo.getEntitlements(slug), repo.listStaff(slug, null), repo.listRecentChanges(slug, from, checkedAt),
+          ]);
+          const activeAdmin = staff.items.some((member) => member.active && member.role === 'clinic_admin')
+            ? 'present' : staff.nextKey ? 'unknown' : 'missing';
+          return respond(200, {
+            branch, checkedAt,
+            configuration: {
+              entitlements: { state: modules ? 'present' : 'missing', version: modules?.version ?? null,
+                enabledModules: MODULES.filter((name) => modules?.modules[name] === true) },
+              staff: { sampledCount: staff.items.length, hasMore: staff.nextKey !== null, activeAdmin },
+            },
+            recentChanges: { from, to: checkedAt, ...recentChanges },
+            telemetry: {
+              clinicAuth: { state: 'not_instrumented' },
+              clinicWorkflow: { state: 'not_instrumented' },
+              emailDelivery: { state: 'not_instrumented' },
+            },
+          });
         }
 
         const route = /^\/api\/control\/clinics\/([a-z0-9-]+)(?:\/(staff(?:\/([a-z0-9._@+-]+))?|modules|state))?$/.exec(input.path);
