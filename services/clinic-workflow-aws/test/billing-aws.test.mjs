@@ -34,37 +34,43 @@ const operation = { id: '11111111-1111-4111-8111-111111111111',
   kind: 'check_in', fingerprint: 'x'.repeat(64), at };
 const charge = { id: 'CONSULTATION', kind: 'consultation', description: 'Clinic consultation',
   quantity: 1, quantityUnit: 'visit', unitPricePaise: 200_000, amountPaise: 200_000,
-  source: 'clinic_config', createdAt: at, actorSub: 'reception-sub' };
+  source: 'staff_manual', createdAt: at, actorSub: 'reception-sub' };
 
-test('check-in transaction atomically changes the appointment and writes one fee, bill, index, operation and private audit', async () => {
+test('check-in transaction atomically changes arrival without adding a fee', async () => {
   let transaction;
   const store = new DynamoBillingStore({ async send(command) { transaction = command.input; return {}; } }, 'clinical-staging');
   assert.equal(await store.commit('goodwell', { appointment, actorSub: 'reception-sub',
-    previousRevision: 0, nextEpisode: episode, operation, charges: [charge],
-    checkInBooked: true, configVersion: 1 }), true);
+    previousRevision: 0, nextEpisode: { ...episode, consultationTotalPaise: 0 }, operation,
+    checkInBooked: true }), true);
   const items = transaction.TransactItems;
-  assert.equal(items.length, 7);
+  assert.equal(items.length, 5);
   const arrival = items[0].Update;
   assert.equal(arrival.Key.pk.S, 'CLINIC#goodwell#APPOINTMENTS#2026-10-15');
   assert.equal(arrival.ExpressionAttributeValues[':status'].S, 'booked');
   assert.equal(arrival.ExpressionAttributeValues[':checkedIn'].S, 'checked_in');
   assert.match(arrival.ConditionExpression, /patientId = :patient AND doctorId = :doctor/);
-  const feeConfig = items[1].ConditionCheck;
-  assert.equal(feeConfig.Key.pk.S, 'CLINIC#goodwell#CONFIG');
-  assert.equal(feeConfig.Key.sk.S, 'BILLING');
-  assert.equal(feeConfig.ExpressionAttributeValues[':version'].N, '1');
-  assert.equal(feeConfig.ExpressionAttributeValues[':fee'].N, '200000');
-  assert.equal(items[2].Put.Item.pk.S, 'CLINIC#goodwell#BILL#appt_1');
-  assert.equal(items[2].Put.Item.revision.N, '1');
-  assert.equal(items[2].Put.ConditionExpression, 'attribute_not_exists(pk)');
-  assert.equal(items[3].Put.Item.pk.S, 'CLINIC#goodwell#BILLING#2026-10-15');
+  assert.equal(items[1].Put.Item.pk.S, 'CLINIC#goodwell#BILL#appt_1');
+  assert.equal(items[1].Put.Item.revision.N, '1');
+  assert.equal(items[1].Put.ConditionExpression, 'attribute_not_exists(pk)');
+  assert.equal(items[2].Put.Item.pk.S, 'CLINIC#goodwell#BILLING#2026-10-15');
+  assert.equal(items[3].Put.Item.sk.S, `OP#${operation.id}`);
+  assert.equal(items[4].Put.Item.action.S, 'billing.check_in');
+  assert.equal(JSON.stringify(items[4]).includes('Synthetic Patient'), false);
+});
+
+test('doctor fee transaction rechecks active roster binding and creates only one charge', async () => {
+  let transaction;
+  const store = new DynamoBillingStore({ async send(command) { transaction = command.input; return {}; } }, 'clinical-staging');
+  assert.equal(await store.commit('goodwell', { appointment: { ...appointment, status: 'checked_in' },
+    actorSub: 'doctor-sub', previousRevision: 1, nextEpisode: { ...episode, revision: 2 },
+    operation: { ...operation, kind: 'consultation_charge' }, charges: [charge],
+    doctorStaffSub: 'doctor-sub', requireCheckedIn: true }), true);
+  const items = transaction.TransactItems;
+  assert.equal(items[1].ConditionCheck.Key.pk.S, 'CLINIC#goodwell#DOCTORS');
+  assert.equal(items[1].ConditionCheck.Key.sk.S, 'DOCTOR#doctor_1');
+  assert.equal(items[1].ConditionCheck.ExpressionAttributeValues[':sub'].S, 'doctor-sub');
   assert.equal(items[4].Put.Item.sk.S, 'CHARGE#CONSULTATION');
   assert.equal(items[4].Put.ConditionExpression, 'attribute_not_exists(pk)');
-  assert.equal(items[5].Put.Item.sk.S, `OP#${operation.id}`);
-  assert.equal(items[5].Put.ConditionExpression, 'attribute_not_exists(pk)');
-  assert.equal(items[6].Put.Item.action.S, 'billing.check_in');
-  assert.equal(items[6].Put.Item.actorSub.S, 'reception-sub');
-  assert.equal(JSON.stringify(items[6]).includes('Synthetic Patient'), false);
 });
 
 test('receipt transaction compares bill revision and canonical finalized encounter before immutable snapshot', async () => {
@@ -124,15 +130,15 @@ test('durable operation lookup is tenant-bound and a conditional race never repo
   assert.equal(seen[0].Key.pk.S, 'CLINIC#goodwell#BILL#appt_1');
   assert.equal(seen[0].Key.sk.S, `OP#${operation.id}`);
   assert.equal(await store.commit('goodwell', { appointment, actorSub: 'reception-sub',
-    previousRevision: 0, nextEpisode: episode, operation, charges: [charge],
-    checkInBooked: true, configVersion: 1 }), false);
-  assert.equal(seen[1].TransactItems[2].Put.ConditionExpression, 'attribute_not_exists(pk)');
+    previousRevision: 0, nextEpisode: episode, operation, checkInBooked: true }), false);
+  assert.equal(seen[1].TransactItems[1].Put.ConditionExpression, 'attribute_not_exists(pk)');
 });
 
 test('SAM registers every billing route on the existing workflow API', () => {
   const template = readFileSync(new URL('../template.yaml', import.meta.url), 'utf8');
   for (const suffix of [
-    'appointments/check-in', 'billing/config', 'billing/episodes', 'billing/read',
+    'appointments/check-in', 'dashboard', 'billing/config', 'billing/episodes', 'billing/read',
+    'billing/consultation-fee/read',
     'billing/consultation-charge', 'billing/fulfillment/read', 'billing/fulfillment',
     'billing/payments', 'billing/receipt',
   ]) assert.ok(template.includes(`/api/workflow/clinics/{slug}/${suffix}`), suffix);

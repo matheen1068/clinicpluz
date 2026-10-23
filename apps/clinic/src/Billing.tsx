@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { getAppointments, pilotDateToday, type Appointment, WorkflowApiError } from './workflowApi';
 import {
-  addLegacyConsultationCharge, BillingApiError, getBillingConfig, issueReceipt, listBillingEpisodes,
-  readBillingEpisode, recordPayment, type BillingConfig, type Episode, type EpisodeDetail,
+  addConsultationCharge, BillingApiError, issueReceipt, listBillingEpisodes,
+  readBillingEpisode, recordPayment, type Episode, type EpisodeDetail,
   type EpisodeSelection, type PaymentMethod,
 } from './billingApi';
 import { formatPaise, rupeesToPaise } from './billingMoney';
@@ -31,9 +31,6 @@ function actionMessage(error: unknown): string {
 
 export default function Billing({ clinicSlug, csrfToken, onSessionLost, onPendingChange }: Props) {
   const [date, setDate] = useState(pilotDateToday);
-  const [config, setConfig] = useState<BillingConfig | null>(null);
-  const [configError, setConfigError] = useState('');
-  const [configLoading, setConfigLoading] = useState(true);
   const [items, setItems] = useState<Episode[]>([]);
   const [listLoading, setListLoading] = useState(true);
   const [listError, setListError] = useState('');
@@ -55,6 +52,7 @@ export default function Billing({ clinicSlug, csrfToken, onSessionLost, onPendin
   const [paymentReference, setPaymentReference] = useState('');
   const [legacyVisit, setLegacyVisit] = useState<Appointment | null>(null);
   const [feeConfirmed, setFeeConfirmed] = useState(false);
+  const [feeRupees, setFeeRupees] = useState('');
   const detailController = useRef<AbortController | null>(null);
   useEffect(() => { onPendingChange(pending); }, [pending, onPendingChange]);
   useEffect(() => () => { detailController.current?.abort(); onPendingChange(false); }, [onPendingChange]);
@@ -69,15 +67,6 @@ export default function Billing({ clinicSlug, csrfToken, onSessionLost, onPendin
     }
     return false;
   }
-
-  useEffect(() => {
-    const controller = new AbortController();
-    setConfigLoading(true); setConfig(null); setConfigError('');
-    void getBillingConfig(clinicSlug, controller.signal).then((value) => { if (!controller.signal.aborted) setConfig(value); })
-      .catch((error: unknown) => { if (!controller.signal.aborted && !accessError(error)) setConfigError('Clinic fee could not be verified. Fee actions are unavailable.'); })
-      .finally(() => { if (!controller.signal.aborted) setConfigLoading(false); });
-    return () => controller.abort();
-  }, [clinicSlug, reload]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -98,7 +87,7 @@ export default function Billing({ clinicSlug, csrfToken, onSessionLost, onPendin
     detailController.current?.abort();
     const controller = new AbortController();
     detailController.current = controller;
-    setSelected(next); setDetail(null); setDetailError(''); setDetailLoading(true); setActionError('');
+    setSelected(next); setDetail(null); setDetailError(''); setDetailLoading(true); setActionError(''); setFeeRupees(''); setFeeConfirmed(false);
     try {
       const value = await readBillingEpisode(clinicSlug, next, csrfToken, controller.signal);
       if (!controller.signal.aborted) { setDetail(value); setWriteBlocked(false); }
@@ -137,10 +126,12 @@ export default function Billing({ clinicSlug, csrfToken, onSessionLost, onPendin
   const receiptReady = current && mayRequestReceipt(current);
 
   async function addMissingFee(visit: EpisodeSelection) {
-    if (!config || !feeConfirmed || listLoading) return;
+    if (!feeConfirmed || listLoading) return;
+    const amountPaise = rupeesToPaise(feeRupees);
+    if (!amountPaise || amountPaise > 100_000_000) { setActionError('Enter a consultation fee from ₹0.01 to ₹10,00,000.00.'); return; }
     const operationId = safeOperationId();
     if (!operationId) { setActionError('This browser cannot create a safe operation ID. No fee was posted.'); return; }
-    await runWrite(() => addLegacyConsultationCharge(clinicSlug, visit, config.consultationFeePaise, operationId, csrfToken), 'Standard consultation fee recorded once for this visit.');
+    await runWrite(() => addConsultationCharge(clinicSlug, visit, current?.appointmentId === visit.appointmentId ? current.revision : 0, amountPaise, operationId, csrfToken), 'Consultation fee saved for this visit.');
   }
 
   async function submitPayment(event: FormEvent<HTMLFormElement>) {
@@ -167,8 +158,8 @@ export default function Billing({ clinicSlug, csrfToken, onSessionLost, onPendin
     <div className="workflow-intro"><div><span className="eyebrow">CLINIC BILLING</span><h3>Checkout and payments</h3><p>One clinic visit, with a separate consultation fee and actual pharmacy supplies.</p></div><span className="workflow-pilot">Synthetic pilot only</span></div>
     <p className="workflow-notice">This records staff-confirmed cash, UPI, or card payments. It does not verify a bank transaction or issue a statutory tax invoice.</p>
     <section className="workflow-card" aria-labelledby="billing-queue-heading"><div className="workflow-card-head billing-head"><div><span className="workflow-step">01</span><h4 id="billing-queue-heading">Clinic day billing queue</h4></div><div className="workflow-queue-controls"><label>Date<input type="date" value={date} onChange={(event) => { if (!pending) { setDate(event.target.value); setSelected(null); setDetail(null); setLegacyVisit(null); setWriteBlocked(false); } }} disabled={pending} /></label><button type="button" className="workflow-link" onClick={() => { if (!pending) { setReload((value) => value + 1); if (selected) void loadDetail(selected); } }} disabled={pending || listLoading}>Refresh queue</button></div></div>
-      {configLoading ? <p role="status" className="workflow-muted">Checking clinic consultation fee…</p> : configError ? <p role="alert" className="workflow-error">{configError}</p> : config && <p className="workflow-hint">Current pilot fee from this clinic’s configuration: <strong>{formatPaise(config.consultationFeePaise)}</strong>. Each visit keeps its own price snapshot.</p>}
-      {listLoading ? <p role="status" className="workflow-muted">Loading billing episodes…</p> : listError ? <p className="workflow-error" role="alert">{listError}</p> : items.length === 0 ? <p className="workflow-empty">No billed visits on {date}. Check in a booked patient or add the standard fee to an existing walk-in.</p> : <div className="billing-groups">{STAGES.map((stage) => groups[stage].length > 0 && <section key={stage} aria-label={BILLING_STAGE_LABELS[stage]}><h5>{BILLING_STAGE_LABELS[stage]} <span>{groups[stage].length}</span></h5><div className="billing-episode-list">{groups[stage].map((episode) => <button type="button" key={episode.appointmentId} className={`billing-episode${selected?.appointmentId === episode.appointmentId ? ' is-selected' : ''}`} aria-pressed={selected?.appointmentId === episode.appointmentId} onClick={() => void loadDetail(episode)} disabled={pending}><strong>{episode.patientName}</strong><span>Consultation {formatPaise(episode.consultationTotalPaise)} · Pharmacy {formatPaise(episode.pharmacyTotalPaise)}</span><small>Outstanding {formatPaise(episode.outstandingPaise)}{episode.paidPaise > 0 && !episode.receiptIssued ? ' · Earlier payment on open episode' : ''}</small></button>)}</div></section>)}</div>}
+      <p className="workflow-hint">Each visit has its own manually entered consultation fee. The assigned doctor can enter it as well.</p>
+      {listLoading ? <p role="status" className="workflow-muted">Loading billing episodes…</p> : listError ? <p className="workflow-error" role="alert">{listError}</p> : items.length === 0 ? <p className="workflow-empty">No billed visits on {date}. Check in a booked patient or enter a fee for an existing visit.</p> : <div className="billing-groups">{STAGES.map((stage) => groups[stage].length > 0 && <section key={stage} aria-label={BILLING_STAGE_LABELS[stage]}><h5>{BILLING_STAGE_LABELS[stage]} <span>{groups[stage].length}</span></h5><div className="billing-episode-list">{groups[stage].map((episode) => <button type="button" key={episode.appointmentId} className={`billing-episode${selected?.appointmentId === episode.appointmentId ? ' is-selected' : ''}`} aria-pressed={selected?.appointmentId === episode.appointmentId} onClick={() => void loadDetail(episode)} disabled={pending}><strong>{episode.patientName}</strong><span>Consultation {formatPaise(episode.consultationTotalPaise)} · Pharmacy {formatPaise(episode.pharmacyTotalPaise)}</span><small>Outstanding {formatPaise(episode.outstandingPaise)}{episode.paidPaise > 0 && !episode.receiptIssued ? ' · Earlier payment on open episode' : ''}</small></button>)}</div></section>)}</div>}
     </section>
     <section className="workflow-card billing-detail" aria-labelledby="billing-detail-heading"><div className="workflow-card-head"><div><span className="workflow-step">02</span><h4 id="billing-detail-heading">Visit checkout</h4></div></div>
       {!selected ? <p className="workflow-empty">Select a billed visit to review charges and payments.</p> : detailLoading ? <p role="status" className="workflow-muted">Verifying current bill…</p> : detailError || !detail ? <div role="alert" className="workflow-error"><p>{detailError || 'The bill could not be verified.'}</p><button type="button" className="workflow-link" onClick={() => void loadDetail(selected)}>Reload bill</button></div> : <>
@@ -178,7 +169,7 @@ export default function Billing({ clinicSlug, csrfToken, onSessionLost, onPendin
         {(detail.episode.pharmacyDisposition === 'awaiting' || detail.episode.pharmacyDisposition === 'open') && <p className="workflow-hint">Pharmacy may still post supplied items. Any amount received now remains an open-episode prepayment; no final receipt is available yet.</p>}
         <h6>Posted charges</h6>{detail.charges.length === 0 ? <p className="workflow-empty">No charges posted yet.</p> : <ul className="billing-lines">{detail.charges.map((charge) => <li key={charge.id}><span>{charge.kind === 'consultation' ? 'Consultation' : 'Pharmacy'} · {charge.description}<small>{charge.quantity} {charge.quantityUnit} × {formatPaise(charge.unitPricePaise)}</small></span><strong>{formatPaise(charge.amountPaise)}</strong></li>)}</ul>}
         <h6>Manual payment entries</h6>{detail.payments.length === 0 ? <p className="workflow-empty">No payment recorded for this visit.</p> : <ul className="billing-lines">{detail.payments.map((payment) => <li key={payment.id}><span>{payment.method.toUpperCase()} · {new Date(payment.recordedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}{payment.reference && <small>Reference: {payment.reference}</small>}</span><strong>{formatPaise(payment.amountPaise)}</strong></li>)}</ul>}
-        {selectedFeeMissing && config && !detail.episode.receiptIssued && <div className="billing-action-box"><h6>Missing consultation fee</h6><p>The standard fee has not been posted to this visit. Confirm the clinic fee once; the server rejects a duplicate.</p><label className="billing-confirm"><input type="checkbox" checked={feeConfirmed} onChange={(event) => setFeeConfirmed(event.target.checked)} disabled={!canWrite} /> I confirm the {formatPaise(config.consultationFeePaise)} consultation fee for this visit.</label><button type="button" className="workflow-action" disabled={!canWrite || !feeConfirmed} onClick={() => void addMissingFee(detail.episode)}>Add standard consultation fee</button></div>}
+        {selectedFeeMissing && !detail.episode.receiptIssued && <div className="billing-action-box"><h6>Missing consultation fee</h6><p>Enter the fee for this visit. The server rejects a duplicate if reception or the doctor already saved one.</p><label>Consultation fee (₹)<input inputMode="decimal" value={feeRupees} onChange={(event) => { setFeeRupees(event.target.value); setFeeConfirmed(false); }} placeholder="0.00" disabled={!canWrite} /></label><label className="billing-confirm"><input type="checkbox" checked={feeConfirmed} onChange={(event) => setFeeConfirmed(event.target.checked)} disabled={!canWrite} /> I confirm this fee for this visit.</label><button type="button" className="workflow-action" disabled={!canWrite || !feeConfirmed} onClick={() => void addMissingFee(detail.episode)}>Save consultation fee</button></div>}
         {!detail.episode.receiptIssued && detail.episode.outstandingPaise > 0 && <form className="billing-action-box billing-payment" onSubmit={(event) => void submitPayment(event)}><h6>Record received payment</h6><p>Enter only money the clinic has confirmed receiving. Partial payments keep a visible outstanding balance.</p><div className="billing-payment-fields"><label>Amount received (₹)<input inputMode="decimal" value={paymentRupees} onChange={(event) => setPaymentRupees(event.target.value)} placeholder="0.00" disabled={!canWrite} required /></label><label>Method<select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value as PaymentMethod)} disabled={!canWrite}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option></select></label><label>Reference <span className="workflow-optional">optional</span><input value={paymentReference} onChange={(event) => setPaymentReference(event.target.value)} maxLength={80} pattern="[A-Za-z0-9 ._:/-]*" title="Use letters, numbers, spaces, or . _ : / -" disabled={!canWrite} /></label></div><button className="workflow-action" type="submit" disabled={!canWrite}>Record payment</button></form>}
         {!detail.episode.receiptIssued && <div className="billing-action-box"><h6>Final paid receipt</h6><p>{receiptReady ? 'The server shows the visit ready for checkout and the balance is zero. Issuing creates an immutable synthetic receipt.' : 'A final receipt needs a posted consultation fee, completed consultation and pharmacy disposition, and zero outstanding balance.'}</p><button type="button" className="workflow-action" disabled={!canWrite || !receiptReady} onClick={() => void createReceipt()}>Issue paid demo receipt</button></div>}
         {detail.receipt && <div className="billing-action-box"><p role="status" className="workflow-success">Final synthetic paid receipt {detail.receipt.id} was issued by the clinic service.</p><button type="button" className="workflow-action" onClick={() => window.print()}>Print issued receipt</button></div>}
@@ -187,8 +178,8 @@ export default function Billing({ clinicSlug, csrfToken, onSessionLost, onPendin
       {actionError && <p className="workflow-error" role="alert">{actionError}</p>}{actionSuccess && <p className="workflow-success" role="status">{actionSuccess}</p>}
     </section>
     <section className="workflow-card" aria-labelledby="missing-fee-heading"><div className="workflow-card-head"><div><span className="workflow-step">03</span><h4 id="missing-fee-heading">Older visit without a fee</h4></div><p>Use only for an already checked-in visit, or an older booked visit whose doctor encounter was finalized. The server verifies eligibility and rejects duplicate charges.</p></div>
-      {visitsError ? <p className="workflow-error" role="alert">{visitsError}</p> : listLoading || visitsLoading ? <p className="workflow-muted">Checking older visits…</p> : missingFeeVisits.length === 0 ? <p className="workflow-empty">No older visits on this date need a manual fee action.</p> : <div className="billing-legacy-list">{missingFeeVisits.map((visit) => <button type="button" key={visit.id} className="workflow-link" onClick={() => { setLegacyVisit(visit); setFeeConfirmed(false); setActionError(''); }} disabled={pending}>{visit.patientName} · {timeLabel(visit.startAt)} · {visit.status.replaceAll('_', ' ')}</button>)}</div>}
-      {legacyVisit && <div className="billing-action-box"><h6>{legacyVisit.patientName}</h6><p>Standard consultation fee: <strong>{config ? formatPaise(config.consultationFeePaise) : 'Unavailable'}</strong>. This action creates a charge once; it does not mark the bill paid.</p><label className="billing-confirm"><input type="checkbox" checked={feeConfirmed} onChange={(event) => setFeeConfirmed(event.target.checked)} disabled={pending || !config} /> I confirmed this visit qualifies for the clinic’s standard fee.</label><button type="button" className="workflow-action" disabled={!feeConfirmed || !config || pending || writeBlocked} onClick={() => void addMissingFee({ appointmentId: legacyVisit.id, clinicDate: date })}>Add missing consultation fee</button></div>}
+      {visitsError ? <p className="workflow-error" role="alert">{visitsError}</p> : listLoading || visitsLoading ? <p className="workflow-muted">Checking older visits…</p> : missingFeeVisits.length === 0 ? <p className="workflow-empty">No older visits on this date need a manual fee action.</p> : <div className="billing-legacy-list">{missingFeeVisits.map((visit) => <button type="button" key={visit.id} className="workflow-link" onClick={() => { setLegacyVisit(visit); setFeeRupees(''); setFeeConfirmed(false); setActionError(''); }} disabled={pending}>{visit.patientName} · {timeLabel(visit.startAt)} · {visit.status.replaceAll('_', ' ')}</button>)}</div>}
+      {legacyVisit && <div className="billing-action-box"><h6>{legacyVisit.patientName}</h6><p>Enter a fee for this existing visit. This creates one charge; it does not mark the bill paid.</p><label>Consultation fee (₹)<input inputMode="decimal" value={feeRupees} onChange={(event) => { setFeeRupees(event.target.value); setFeeConfirmed(false); }} placeholder="0.00" disabled={pending || writeBlocked} /></label><label className="billing-confirm"><input type="checkbox" checked={feeConfirmed} onChange={(event) => setFeeConfirmed(event.target.checked)} disabled={pending || writeBlocked} /> I confirm this fee for the selected visit.</label><button type="button" className="workflow-action" disabled={!feeConfirmed || pending || writeBlocked} onClick={() => void addMissingFee({ appointmentId: legacyVisit.id, clinicDate: date })}>Save consultation fee</button></div>}
     </section>
     {detail?.receipt && <BillingReceiptPrint receipt={detail.receipt} />}
   </div>;

@@ -20,7 +20,7 @@ export interface BillEpisode {
 export interface BillCharge {
   id: string; kind: 'consultation' | 'pharmacy'; description: string;
   quantity: number; quantityUnit: string; unitPricePaise: number; amountPaise: number;
-  source: 'clinic_config' | 'pharmacy_manual'; prescriptionIndex?: number;
+  source: 'clinic_config' | 'staff_manual' | 'pharmacy_manual'; prescriptionIndex?: number;
   prescriptionRevision?: number; createdAt: string; actorSub: string;
 }
 export interface BillPayment {
@@ -63,6 +63,7 @@ export interface BillingWrite {
   requireCheckedIn?: boolean;
   encounterRevision?: number;
   configVersion?: number;
+  doctorStaffSub?: string;
 }
 
 export interface BillingStore {

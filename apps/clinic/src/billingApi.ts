@@ -12,10 +12,10 @@ export interface Episode {
   paidPaise: number; outstandingPaise: number; pharmacyDisposition: PharmacyDisposition;
   checkoutStatus: CheckoutStatus; receiptIssued: boolean; createdAt: string; updatedAt: string;
 }
-export interface BillingConfig { currency: 'INR'; consultationFeePaise: number; version: number }
+export interface ConsultationFeeStatus { amountPaise: number | null; revision: number }
 export interface Charge {
   id: string; kind: 'consultation' | 'pharmacy'; description: string; quantity: number; quantityUnit: string;
-  unitPricePaise: number; amountPaise: number; source: 'clinic_config' | 'pharmacy_manual';
+  unitPricePaise: number; amountPaise: number; source: 'staff_manual' | 'clinic_config' | 'pharmacy_manual';
   prescriptionIndex?: number; prescriptionRevision?: number; createdAt: string; actorSub: string;
 }
 export interface Payment {
@@ -116,7 +116,7 @@ function matchingEpisode(value: unknown, selected: EpisodeSelection): Episode {
 function parseCharge(value: unknown): Charge {
   if (!isRecord(value) || !recordId(value.id) || (value.kind !== 'consultation' && value.kind !== 'pharmacy') || !text(value.description) ||
       !positive(value.quantity) || !text(value.quantityUnit) || !money(value.unitPricePaise) || !money(value.amountPaise) ||
-      (value.source !== 'clinic_config' && value.source !== 'pharmacy_manual') || !timestamp(value.createdAt) || !id(value.actorSub) ||
+      (value.source !== 'staff_manual' && value.source !== 'clinic_config' && value.source !== 'pharmacy_manual') || !timestamp(value.createdAt) || !id(value.actorSub) ||
       (value.prescriptionIndex !== undefined && !count(value.prescriptionIndex)) ||
       (value.prescriptionRevision !== undefined && !count(value.prescriptionRevision))) invalid('billing charge');
   return value as unknown as Charge;
@@ -138,24 +138,29 @@ function parseReceipt(value: unknown, slug: string, episode: Episode): Receipt {
   return { ...value, charges: value.charges.map(parseCharge), payments: value.payments.map(parsePayment) } as Receipt;
 }
 
-export async function getBillingConfig(slug: string, signal?: AbortSignal): Promise<BillingConfig> {
-  const value = await request(path(slug, 'billing/config'), { signal });
-  if (!isRecord(value) || value.currency !== 'INR' || !money(value.consultationFeePaise) || !count(value.version)) invalid('billing configuration');
-  return value as unknown as BillingConfig;
-}
-export async function checkInAppointment(slug: string, selected: EpisodeSelection, expectedFeePaise: number, operationId: string, csrfToken: string): Promise<Episode> {
+export async function readConsultationFee(slug: string, selected: EpisodeSelection, csrfToken: string, signal?: AbortSignal): Promise<ConsultationFeeStatus> {
   selection(selected);
-  if (!money(expectedFeePaise) || !uuid(operationId)) throw new BillingApiError(null, 'Invalid check-in request');
-  const value = await post(slug, 'appointments/check-in', { ...selectionBody(selected), expectedFeePaise, operationId }, csrfToken);
+  const value = await post(slug, 'billing/consultation-fee/read', selectionBody(selected), csrfToken, signal);
+  if (!isRecord(value) || (value.amountPaise !== null && (!money(value.amountPaise) || value.amountPaise === 0)) || !count(value.revision)) invalid('consultation fee status');
+  return { amountPaise: value.amountPaise as number | null, revision: value.revision as number };
+}
+export async function checkInAppointment(slug: string, selected: EpisodeSelection, operationId: string, csrfToken: string): Promise<Episode> {
+  selection(selected);
+  if (!uuid(operationId)) throw new BillingApiError(null, 'Invalid check-in request');
+  const value = await post(slug, 'appointments/check-in', { ...selectionBody(selected), operationId }, csrfToken);
   if (!isRecord(value) || !isRecord(value.appointment) || value.appointment.id !== selected.appointmentId || value.appointment.status !== 'checked_in') invalid('check-in');
-  return matchingEpisode(value.episode, selected);
+  const episode = matchingEpisode(value.episode, selected);
+  if (episode.consultationTotalPaise !== 0) invalid('arrival-only check-in');
+  return episode;
 }
-export async function addLegacyConsultationCharge(slug: string, selected: EpisodeSelection, expectedFeePaise: number, operationId: string, csrfToken: string): Promise<Episode> {
+export async function addConsultationCharge(slug: string, selected: EpisodeSelection, expectedRevision: number, amountPaise: number, operationId: string, csrfToken: string): Promise<Episode> {
   selection(selected);
-  if (!money(expectedFeePaise) || !uuid(operationId)) throw new BillingApiError(null, 'Invalid consultation charge request');
-  const value = await post(slug, 'billing/consultation-charge', { ...selectionBody(selected), expectedFeePaise, operationId, reason: 'legacy_check_in_missing' }, csrfToken);
+  if (!count(expectedRevision) || !money(amountPaise) || amountPaise === 0 || amountPaise > 100_000_000 || !uuid(operationId)) throw new BillingApiError(null, 'Invalid consultation charge request');
+  const value = await post(slug, 'billing/consultation-charge', { ...selectionBody(selected), expectedRevision, amountPaise, operationId }, csrfToken);
   if (!isRecord(value)) invalid('consultation charge');
-  return matchingEpisode(value.episode, selected);
+  const episode = matchingEpisode(value.episode, selected);
+  if (episode.consultationTotalPaise !== amountPaise) invalid('consultation charge amount');
+  return episode;
 }
 export async function listBillingEpisodes(slug: string, clinicDate: string, signal?: AbortSignal): Promise<Episode[]> {
   if (!date(clinicDate)) throw new BillingApiError(null, 'Invalid billing date');

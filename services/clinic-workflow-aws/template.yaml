@@ -179,6 +179,9 @@ Resources:
         CheckInAppointment:
           Type: HttpApi
           Properties: { ApiId: !Ref WorkflowApi, Path: '/api/workflow/clinics/{slug}/appointments/check-in', Method: POST, PayloadFormatVersion: '2.0' }
+        Dashboard:
+          Type: HttpApi
+          Properties: { ApiId: !Ref WorkflowApi, Path: '/api/workflow/clinics/{slug}/dashboard', Method: GET, PayloadFormatVersion: '2.0' }
         BillingConfig:
           Type: HttpApi
           Properties: { ApiId: !Ref WorkflowApi, Path: '/api/workflow/clinics/{slug}/billing/config', Method: GET, PayloadFormatVersion: '2.0' }
@@ -188,6 +191,9 @@ Resources:
         BillingRead:
           Type: HttpApi
           Properties: { ApiId: !Ref WorkflowApi, Path: '/api/workflow/clinics/{slug}/billing/read', Method: POST, PayloadFormatVersion: '2.0' }
+        BillingConsultationFeeRead:
+          Type: HttpApi
+          Properties: { ApiId: !Ref WorkflowApi, Path: '/api/workflow/clinics/{slug}/billing/consultation-fee/read', Method: POST, PayloadFormatVersion: '2.0' }
         BillingConsultationCharge:
           Type: HttpApi
           Properties: { ApiId: !Ref WorkflowApi, Path: '/api/workflow/clinics/{slug}/billing/consultation-charge', Method: POST, PayloadFormatVersion: '2.0' }

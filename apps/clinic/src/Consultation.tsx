@@ -9,6 +9,7 @@ import { pilotDateToday } from './workflowApi';
 import { MedicineEntry } from './MedicineEntry';
 import PatientHistory from './PatientHistory';
 import DoctorSchedule from './DoctorSchedule';
+import ConsultationFee from './ConsultationFee';
 import PrescriptionPrint from './PrescriptionPrint';
 import { medicationTimingText } from './medicationDirections';
 
@@ -83,6 +84,7 @@ function ConsultationDesk({ clinicSlug, csrfToken, role, onSessionLost, onDirtyC
   const [medications, setMedications] = useState<Medication[]>([]);
   const [medicationBaseline, setMedicationBaseline] = useState<Medication[]>([]);
   const [pending, setPending] = useState<'vitals' | 'draft' | 'finalize' | null>(null);
+  const [feePending, setFeePending] = useState(false);
   const [actionError, setActionError] = useState('');
   const [actionSuccess, setActionSuccess] = useState('');
   const [needsReload, setNeedsReload] = useState(false);
@@ -99,16 +101,16 @@ function ConsultationDesk({ clinicSlug, csrfToken, role, onSessionLost, onDirtyC
 
   useEffect(() => { onDirtyChange?.(navigationRisk); }, [navigationRisk, onDirtyChange]);
   useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
-  useEffect(() => { onPendingChange?.(pending !== null); }, [pending, onPendingChange]);
+  useEffect(() => { onPendingChange?.(pending !== null || feePending); }, [pending, feePending, onPendingChange]);
   useEffect(() => () => onPendingChange?.(false), [onPendingChange]);
   useEffect(() => { if (confirmFinal) confirmButtonRef.current?.focus(); }, [confirmFinal]);
   useEffect(() => { if (readError) readErrorRef.current?.focus(); }, [readError]);
   useEffect(() => {
-    if (!navigationRisk && !pending) return;
+    if (!navigationRisk && !pending && !feePending) return;
     const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ''; };
     window.addEventListener('beforeunload', warn);
     return () => window.removeEventListener('beforeunload', warn);
-  }, [navigationRisk, pending]);
+  }, [navigationRisk, pending, feePending]);
 
   function handleAccessError(error: unknown, scope: 'module' | 'visit'): boolean {
     if (!(error instanceof ConsultationApiError)) return false;
@@ -138,13 +140,13 @@ function ConsultationDesk({ clinicSlug, csrfToken, role, onSessionLost, onDirtyC
   }
   function choose(item: ConsultationQueueItem) {
     if (selected?.appointmentId === item.appointmentId && selected.clinicDate === item.clinicDate) return;
-    if (pending || !safeToDiscard()) return;
+    if (pending || feePending || !safeToDiscard()) return;
     setActionError(''); setActionSuccess(''); setNeedsReload(false); setConfirmFinal(false); setRecoverySnapshot(null); setVisitError('');
     setSelected(item); setEncounter(null);
   }
   function chooseDate(next: string) {
     if (next === date) return;
-    if (pending || !safeToDiscard()) return;
+    if (pending || feePending || !safeToDiscard()) return;
     setSelected(null); setEncounter(null); setActionError(''); setActionSuccess('');
     setNeedsReload(false); setConfirmFinal(false); setRecoverySnapshot(null); setVisitError(''); setDate(next);
   }
@@ -166,7 +168,12 @@ function ConsultationDesk({ clinicSlug, csrfToken, role, onSessionLost, onDirtyC
     const controller = new AbortController();
     setQueue([]); setQueueLoading(true); setQueueError('');
     void getConsultationQueue(clinicSlug, date, controller.signal).then((items) => {
-      if (!controller.signal.aborted) setQueue(items);
+      if (!controller.signal.aborted) {
+        setQueue(items);
+        setSelected((current) => current
+          ? items.find((item) => item.appointmentId === current.appointmentId && item.clinicDate === current.clinicDate) ?? current
+          : null);
+      }
     }).catch((error: unknown) => {
       if (!controller.signal.aborted && !handleAccessError(error, 'module')) setQueueError('Consultation queue unavailable. Retry before selecting a visit.');
     }).finally(() => { if (!controller.signal.aborted) setQueueLoading(false); });
@@ -295,6 +302,12 @@ function ConsultationDesk({ clinicSlug, csrfToken, role, onSessionLost, onDirtyC
       <div className="consultation-main">
         {!selected ? <section className="workflow-card consultation-empty" role="status"><span className="workflow-step">02</span><h4>Select a visit</h4><p>Choose an existing appointment from the list to view or record its encounter.</p></section> : readLoading ? <section className="workflow-card consultation-empty" role="status"><h4>Loading encounter…</h4><p>Checking visit and staff access.</p></section> : readError || !encounter ? <><section className="workflow-card consultation-empty" role="alert"><h4 ref={readErrorRef} tabIndex={-1}>Encounter unavailable</h4><p>{readError || 'The encounter could not be verified.'}</p><button type="button" className="workflow-link" onClick={reloadEncounter}>Retry encounter</button></section>{recoverySnapshot && <RecoveryCopy snapshot={recoverySnapshot} doctorRole={doctorRole} canRestore={false} onRestore={restoreLocalEdits} onDiscard={() => setRecoverySnapshot(null)} />}</> : <>
           <section className="workflow-card consultation-identity" aria-labelledby="encounter-heading"><div className="consultation-identity-top"><div><span className="eyebrow">VISIT RECORD</span><h4 id="encounter-heading">{encounter.patient.fullName}</h4><p>{encounter.patient.ageYears} years at registration · {encounter.patient.sex} · {encounter.doctor.displayName}</p></div><span className={`consultation-status${encounter.status === 'finalized' ? ' is-final' : ''}`}>{encounter.status === 'finalized' ? 'Finalized' : encounter.revision === 0 ? 'Not started' : 'Draft'}</span></div><p className="consultation-meta">Appointment: {clinicTime(selected.startAt)} · Clinic date: {selected.clinicDate} · {encounter.clinic.displayName}</p>{encounter.status === 'finalized' && encounter.finalizedAt && <p className="consultation-meta">Finalized: {clinicTime(encounter.finalizedAt)}</p>}</section>
+
+          {doctorRole && <ConsultationFee key={`${clinicSlug}:${selected.appointmentId}:${selected.clinicDate}`}
+            clinicSlug={clinicSlug} appointmentId={selected.appointmentId} clinicDate={selected.clinicDate}
+            patientName={encounter.patient.fullName} appointmentStatus={selected.appointmentStatus}
+            encounterStatus={encounter.status} csrfToken={csrfToken}
+            onSessionLost={onSessionLost} onBusyChange={setFeePending} />}
 
           {doctorRole && <PatientHistory key={`${clinicSlug}:${selected.appointmentId}:${selected.clinicDate}:${encounter.patient.id}`}
             clinicSlug={clinicSlug} appointmentId={selected.appointmentId} clinicDate={selected.clinicDate}

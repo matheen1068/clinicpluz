@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  addLegacyConsultationCharge, BillingApiError, checkInAppointment, getBillingConfig,
+  addConsultationCharge, BillingApiError, checkInAppointment, readConsultationFee,
   issueReceipt, listBillingEpisodes, readBillingEpisode, readFulfillment, recordFulfillment, recordPayment,
 } from './billingApi.ts';
 
@@ -30,20 +30,21 @@ function mockJson(status, body, capture) {
   };
 }
 
-test('clinic fee, queue, and check-in stay on same-origin cookie API with a stable operation ID', async () => {
+test('queue, fee status, and arrival-only check-in use same-origin cookie API', async () => {
   const calls = [];
-  mockJson(200, { currency: 'INR', consultationFeePaise: 200000, version: 1 }, calls);
-  assert.equal((await getBillingConfig('goodwell')).consultationFeePaise, 200000);
   mockJson(200, { items: [episode] }, calls);
   assert.equal((await listBillingEpisodes('goodwell', date)).length, 1);
-  mockJson(200, { appointment: { id: appointmentId, status: 'checked_in' }, episode }, calls);
-  assert.equal((await checkInAppointment('goodwell', selection, 200000, operationId, 'csrf')).revision, 2);
-  assert.match(calls[0].url, /\/api\/workflow\/clinics\/goodwell\/billing\/config$/);
-  assert.match(calls[1].url, /billing\/episodes\?date=2026-10-15$/);
+  mockJson(200, { amountPaise: null, revision: 1 }, calls);
+  assert.deepEqual(await readConsultationFee('goodwell', selection, 'csrf'), { amountPaise: null, revision: 1 });
+  mockJson(200, { appointment: { id: appointmentId, status: 'checked_in' }, episode: { ...episode, revision: 1,
+    consultationTotalPaise: 0, totalPaise: 0, outstandingPaise: 0, checkoutStatus: 'awaiting_fee' } }, calls);
+  await checkInAppointment('goodwell', selection, operationId, 'csrf');
+  assert.match(calls[0].url, /billing\/episodes\?date=2026-10-15$/);
+  assert.match(calls[1].url, /billing\/consultation-fee\/read$/);
   assert.match(calls[2].url, /appointments\/check-in$/);
   assert.equal(calls[2].init.credentials, 'include');
   assert.equal(calls[2].init.headers['X-CSRF-Token'], 'csrf');
-  assert.deepEqual(JSON.parse(calls[2].init.body), { ...selection, expectedFeePaise: 200000, operationId });
+  assert.deepEqual(JSON.parse(calls[2].init.body), { ...selection, operationId });
 });
 
 test('bill detail accepts pharmacy charge IDs, but rejects a receipt from another clinic', async () => {
@@ -96,10 +97,10 @@ test('billing requests send only identity fields when given a full queue episode
   await readBillingEpisode('goodwell', episode, 'csrf');
   assert.deepEqual(JSON.parse(calls[0].init.body), selection);
 
-  mockJson(200, { episode }, calls);
-  await addLegacyConsultationCharge('goodwell', episode, 200000, operationId, 'csrf');
+  mockJson(200, { episode: { ...episode, consultationTotalPaise: 235000, totalPaise: 235000, outstandingPaise: 235000 } }, calls);
+  await addConsultationCharge('goodwell', episode, 2, 235000, operationId, 'csrf');
   assert.deepEqual(JSON.parse(calls[1].init.body), {
-    ...selection, expectedFeePaise: 200000, operationId, reason: 'legacy_check_in_missing',
+    ...selection, expectedRevision: 2, amountPaise: 235000, operationId,
   });
 
   mockJson(200, { episode: { ...episode, paidPaise: 50000, outstandingPaise: 150000, revision: 3 },
@@ -128,4 +129,11 @@ test('billing requests send only identity fields when given a full queue episode
     items: [{ prescriptionIndex: 0, quantity: 1, quantityUnit: 'tablet', unitPricePaise: 1000, status: 'supplied' }],
     closeForCheckout: true,
   });
+});
+
+test('manual fee responses must match the staff-entered amount', async () => {
+  mockJson(200, { episode });
+  await assert.rejects(() => addConsultationCharge('goodwell', selection, 1, 235000, operationId, 'csrf'), BillingApiError);
+  mockJson(200, { amountPaise: -1, revision: 1 });
+  await assert.rejects(() => readConsultationFee('goodwell', selection, 'csrf'), BillingApiError);
 });
