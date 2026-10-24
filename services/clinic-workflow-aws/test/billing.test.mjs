@@ -1,10 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { registerHooks } from 'node:module';
 import {
   chargeAmount, episodeView, receiptSnapshot, validOperationId, validPaise,
 } from '../src/billing.ts';
-import { createWorkflowApp } from '../src/core.ts';
+registerHooks({ resolve(specifier, context, nextResolve) {
+  if (specifier === './prescription-pdf.ts' && context.parentURL?.endsWith('/src/core.ts')) {
+    return { url: 'data:text/javascript,export async function renderPrescriptionPdf(){throw new Error("Unused in billing tests")};export class UnsupportedPrescriptionText extends Error{}', shortCircuit: true };
+  }
+  return nextResolve(specifier, context);
+} });
+const { createWorkflowApp } = await import('../src/core.ts');
 
 const NOW = '2026-10-15T10:00:00.000Z';
 const clinic = { slug: 'goodwell', displayName: 'Goodwell Demo Clinic', active: true };
@@ -124,6 +131,7 @@ const COOKIES = {
 const API = '/api/workflow/clinics/goodwell';
 const IDS = {
   checkIn: '11111111-1111-4111-8111-111111111111',
+  fee: '88888888-8888-4888-8888-888888888888',
   duplicateCheckIn: '22222222-2222-4222-8222-222222222222',
   prepayment: '33333333-3333-4333-8333-333333333333',
   fulfillment: '44444444-4444-4444-8444-444444444444',
@@ -171,9 +179,11 @@ function setupBilling() {
   const encounters = new Map();
   const workflow = {
     async getSchedule() { return null; },
-    async listDoctors() { return []; },
+    async listDoctors() { return [{ id: appointment.doctorId, displayName: appointment.doctorName,
+      active: true, staffSub: 'doctor-sub' }]; },
     async listMedicines() { return []; },
-    async getDoctor() { return null; },
+    async getDoctor(slug, id) { return slug === 'goodwell' && id === appointment.doctorId ?
+      { id, displayName: appointment.doctorName, active: true, staffSub: 'doctor-sub' } : null; },
     async searchPatients() { return []; },
     async getPatient(slug, id) { return patients.get(slug)?.get(id) ?? null; },
     async createPatient() { throw new Error('Unused in billing test'); },
@@ -182,7 +192,9 @@ function setupBilling() {
     async getEncounter(slug, date, id) { return encounters.get(`${slug}/${date}/${id}`) ?? null; },
     async listPatientHistory() { return []; },
     async getHistoryEntry() { return null; },
-    async listEncounterStatuses() { return new Map(); },
+    async listEncounterStatuses(slug, date) { return new Map([...encounters.entries()]
+      .filter(([key]) => key.startsWith(`${slug}/${date}/`))
+      .map(([, encounter]) => [encounter.appointmentId, encounter.status])); },
     async saveEncounter() { throw new Error('Unused in billing test'); },
     async claimPrescriptionEmail() { throw new Error('Unused in billing test'); },
     async markPrescriptionEmail() { throw new Error('Unused in billing test'); },
@@ -213,6 +225,7 @@ function setupBilling() {
       if (write.checkInBooked && storedVisit.status !== 'booked') return false;
       if (write.requireCheckedIn && storedVisit.status !== 'checked_in') return false;
       if (write.configVersion !== undefined && write.configVersion !== config.version) return false;
+      if (write.doctorStaffSub && write.doctorStaffSub !== 'doctor-sub') return false;
       if (write.encounterRevision !== undefined) {
         const canonical = encounters.get(`${slug}/${storedVisit.clinicDate}/${storedVisit.id}`);
         if (canonical?.status !== 'finalized' || canonical.revision !== write.encounterRevision ||
@@ -271,41 +284,82 @@ function setupBilling() {
     records, operations, audit, finalize };
 }
 
-test('one check-in fee stays open through prepayment and partial pharmacy supply until settled receipt', async () => {
+test('dashboard counts clinic visits while doctor sees only assigned visits', async () => {
   const world = setupBilling();
-  const checkIn = { ...selected, operationId: IDS.checkIn, expectedFeePaise: 200_000 };
-  const wrongFee = await world.call('POST', `${API}/appointments/check-in`,
-    { ...checkIn, expectedFeePaise: 199_999 });
-  assert.equal(wrongFee.status, 409);
+  world.visits.get('goodwell').push({ ...appointment, id: 'visit-2', doctorId: 'other-doctor',
+    status: 'checked_in', source: 'walk_in' });
+  const reception = await world.call('GET', `${API}/dashboard`, undefined,
+    { queryString: 'date=2026-10-15' });
+  assert.equal(reception.status, 200);
+  assert.deepEqual(reception.body.counts, { total: 2, booked: 1, checkedIn: 1,
+    pending: 1, completed: 0, phone: 1, walkIn: 1 });
+  const doctor = await world.call('GET', `${API}/dashboard`, undefined,
+    { role: 'doctor', queryString: 'date=2026-10-15' });
+  assert.equal(doctor.status, 200);
+  assert.deepEqual(doctor.body.counts, { total: 1, booked: 1, checkedIn: 0,
+    pending: 0, completed: 0, phone: 1, walkIn: 0 });
+  assert.equal((await world.call('GET', `${API}/dashboard`, undefined,
+    { role: 'nurse', queryString: 'date=2026-10-15' })).status, 403);
+  world.finalize();
+  const completed = await world.call('GET', `${API}/dashboard`, undefined,
+    { role: 'doctor', queryString: 'date=2026-10-15' });
+  assert.equal(completed.body.counts.completed, 1);
+  assert.equal(completed.body.counts.booked, 0);
+});
+
+test('doctor fee read and write fail when roster binding changes', async () => {
+  const world = setupBilling();
+  world.visits.get('goodwell')[0].status = 'checked_in';
+  const visit = world.visits.get('goodwell')[0];
+  visit.doctorId = 'other-doctor';
+  const fee = { ...selected, operationId: IDS.fee, expectedRevision: 0, amountPaise: 125_000 };
+  assert.equal((await world.call('POST', `${API}/billing/consultation-fee/read`, selected,
+    { role: 'doctor' })).status, 403);
+  assert.equal((await world.call('POST', `${API}/billing/consultation-charge`, fee,
+    { role: 'doctor' })).status, 403);
+  assert.equal(world.records.size, 0);
+});
+
+test('manual fee after check-in stays open through prepayment and pharmacy until settled receipt', async () => {
+  const world = setupBilling();
+  const checkIn = { ...selected, operationId: IDS.checkIn };
+  const oldShape = await world.call('POST', `${API}/appointments/check-in`,
+    { ...checkIn, expectedFeePaise: 200_000 });
+  assert.equal(oldShape.status, 400);
   assert.equal(world.visits.get('goodwell')[0].status, 'booked');
 
   const arrived = await world.call('POST', `${API}/appointments/check-in`, checkIn);
   assert.equal(arrived.status, 200, JSON.stringify(arrived.body));
   assert.equal(arrived.body.appointment.status, 'checked_in');
-  assert.equal(arrived.body.episode.consultationTotalPaise, 200_000);
+  assert.equal(arrived.body.episode.consultationTotalPaise, 0);
   assert.equal(arrived.body.episode.revision, 1);
-  assert.equal(arrived.body.episode.checkoutStatus, 'awaiting_consultation');
+  assert.equal(arrived.body.episode.checkoutStatus, 'awaiting_fee');
   const key = `goodwell/${appointment.id}`;
-  assert.equal(world.records.get(key).charges.length, 1);
-  assert.equal(world.records.get(key).charges[0].source, 'clinic_config');
+  assert.equal(world.records.get(key).charges.length, 0);
 
   const retryCheckIn = await world.call('POST', `${API}/appointments/check-in`, checkIn);
   assert.equal(retryCheckIn.status, 200);
-  assert.equal(world.records.get(key).charges.length, 1);
+  assert.equal(world.records.get(key).charges.length, 0);
   assert.equal(world.records.get(key).episode.revision, 1);
   assert.equal((await world.call('POST', `${API}/appointments/check-in`,
     { ...checkIn, operationId: IDS.duplicateCheckIn })).status, 409);
-  assert.equal(world.records.get(key).charges.length, 1);
+  assert.equal(world.records.get(key).charges.length, 0);
+
+  const fee = await world.call('POST', `${API}/billing/consultation-charge`,
+    { ...selected, operationId: IDS.fee, expectedRevision: 1, amountPaise: 200_000 });
+  assert.equal(fee.status, 200, JSON.stringify(fee.body));
+  assert.equal(fee.body.episode.revision, 2);
+  assert.equal(world.records.get(key).charges[0].source, 'staff_manual');
 
   const prepaid = await world.call('POST', `${API}/billing/payments`,
-    { ...selected, operationId: IDS.prepayment, expectedRevision: 1,
+    { ...selected, operationId: IDS.prepayment, expectedRevision: 2,
       amountPaise: 200_000, method: 'upi', reference: 'SYNTHETIC-REF-1' });
   assert.equal(prepaid.status, 200, JSON.stringify(prepaid.body));
   assert.equal(prepaid.body.episode.paidPaise, 200_000);
   assert.equal(prepaid.body.episode.outstandingPaise, 0);
   assert.equal(prepaid.body.episode.checkoutStatus, 'awaiting_consultation');
   assert.equal((await world.call('POST', `${API}/billing/receipt`,
-    { ...selected, operationId: IDS.receipt, expectedRevision: 2 })).status, 409);
+    { ...selected, operationId: IDS.receipt, expectedRevision: 3 })).status, 409);
 
   const encounter = world.finalize();
   const handoff = await world.call('POST', `${API}/billing/fulfillment/read`, selected,
@@ -317,7 +371,7 @@ test('one check-in fee stays open through prepayment and partial pharmacy supply
   assert.equal(handoff.body.episode.checkoutStatus, 'awaiting_pharmacy');
 
   const filled = await world.call('POST', `${API}/billing/fulfillment`,
-    { ...selected, operationId: IDS.fulfillment, expectedRevision: 2,
+    { ...selected, operationId: IDS.fulfillment, expectedRevision: 3,
       prescriptionRevision: encounter.revision,
       items: [{ prescriptionIndex: 0, quantity: 3, quantityUnit: 'tablet',
         unitPricePaise: 15_000, status: 'partly_supplied' }], closeForCheckout: true },
@@ -331,16 +385,16 @@ test('one check-in fee stays open through prepayment and partial pharmacy supply
   assert.equal(world.records.get(key).charges[1].prescriptionIndex, 0);
   assert.equal(world.records.get(key).charges[1].amountPaise, 45_000);
   assert.equal((await world.call('POST', `${API}/billing/receipt`,
-    { ...selected, operationId: IDS.receipt, expectedRevision: 3 })).status, 409);
+    { ...selected, operationId: IDS.receipt, expectedRevision: 4 })).status, 409);
 
   const balance = await world.call('POST', `${API}/billing/payments`,
-    { ...selected, operationId: IDS.balancePayment, expectedRevision: 3,
+    { ...selected, operationId: IDS.balancePayment, expectedRevision: 4,
       amountPaise: 45_000, method: 'cash' });
   assert.equal(balance.status, 200, JSON.stringify(balance.body));
   assert.equal(balance.body.episode.outstandingPaise, 0);
   assert.equal(balance.body.episode.checkoutStatus, 'ready_for_checkout');
   const paid = await world.call('POST', `${API}/billing/receipt`,
-    { ...selected, operationId: IDS.receipt, expectedRevision: 4 });
+    { ...selected, operationId: IDS.receipt, expectedRevision: 5 });
   assert.equal(paid.status, 200, JSON.stringify(paid.body));
   assert.equal(paid.body.episode.checkoutStatus, 'paid');
   assert.equal(paid.body.receipt.totalPaise, 245_000);
@@ -348,19 +402,19 @@ test('one check-in fee stays open through prepayment and partial pharmacy supply
   assert.deepEqual(paid.body.receipt.charges.map((charge) => charge.amountPaise), [200_000, 45_000]);
   assert.deepEqual(paid.body.receipt.payments.map((payment) => payment.amountPaise), [200_000, 45_000]);
   const retryReceipt = await world.call('POST', `${API}/billing/receipt`,
-    { ...selected, operationId: IDS.receipt, expectedRevision: 4 });
+    { ...selected, operationId: IDS.receipt, expectedRevision: 5 });
   assert.equal(retryReceipt.status, 200);
   assert.equal(retryReceipt.body.receipt.id, paid.body.receipt.id);
-  assert.equal(world.records.get(key).episode.revision, 5);
+  assert.equal(world.records.get(key).episode.revision, 6);
   assert.equal((await world.call('POST', `${API}/billing/receipt`,
-    { ...selected, operationId: IDS.secondReceipt, expectedRevision: 5 })).status, 409);
+    { ...selected, operationId: IDS.secondReceipt, expectedRevision: 6 })).status, 409);
   assert.deepEqual(world.audit.map((event) => event.kind),
-    ['check_in', 'payment', 'fulfillment', 'payment', 'receipt']);
+    ['check_in', 'consultation_charge', 'payment', 'fulfillment', 'payment', 'receipt']);
 });
 
 test('billing routes enforce role, tenant, entitlement, CSRF, and optimistic revision', async () => {
   const world = setupBilling();
-  const checkIn = { ...selected, operationId: IDS.checkIn, expectedFeePaise: 200_000 };
+  const checkIn = { ...selected, operationId: IDS.checkIn };
   for (const role of ['doctor', 'nurse', 'billing', 'pharmacist']) {
     assert.equal((await world.call('POST', `${API}/appointments/check-in`, checkIn,
       { role })).status, 403, role);
@@ -390,26 +444,32 @@ test('billing routes enforce role, tenant, entitlement, CSRF, and optimistic rev
   assert.equal(world.operations.size, 1);
 });
 
-test('legacy checked-in visit accepts one explicit consultation fee fallback', async () => {
+test('checked-in visit accepts one manual consultation fee from its assigned doctor', async () => {
   const world = setupBilling();
   world.visits.get('goodwell')[0].status = 'checked_in';
-  const request = { ...selected, operationId: IDS.checkIn, expectedFeePaise: 200_000,
-    reason: 'legacy_check_in_missing' };
+  const request = { ...selected, operationId: IDS.fee, expectedRevision: 0, amountPaise: 175_000 };
   assert.equal((await world.call('POST', `${API}/billing/consultation-charge`,
-    { ...request, reason: 'other' })).status, 400);
-  const charged = await world.call('POST', `${API}/billing/consultation-charge`, request);
+    { ...request, amountPaise: 0 }, { role: 'doctor' })).status, 400);
+  const initial = await world.call('POST', `${API}/billing/consultation-fee/read`, selected,
+    { role: 'doctor' });
+  assert.deepEqual(initial.body, { amountPaise: null, revision: 0 });
+  const charged = await world.call('POST', `${API}/billing/consultation-charge`, request,
+    { role: 'doctor' });
   assert.equal(charged.status, 200, JSON.stringify(charged.body));
-  assert.equal(charged.body.episode.consultationTotalPaise, 200_000);
+  assert.equal(charged.body.episode.consultationTotalPaise, 175_000);
   assert.equal(charged.body.episode.checkoutStatus, 'awaiting_consultation');
-  assert.equal((await world.call('POST', `${API}/billing/consultation-charge`, request)).status, 200);
+  assert.equal((await world.call('POST', `${API}/billing/consultation-charge`, request,
+    { role: 'doctor' })).status, 200);
+  assert.deepEqual((await world.call('POST', `${API}/billing/consultation-fee/read`, selected,
+    { role: 'reception' })).body, { amountPaise: 175_000, revision: 1 });
   assert.equal((await world.call('POST', `${API}/billing/consultation-charge`,
     { ...request, operationId: IDS.duplicateCheckIn })).status, 409);
   assert.equal((await world.call('POST', `${API}/appointments/check-in`,
-    { ...selected, operationId: IDS.duplicateCheckIn, expectedFeePaise: 200_000 })).status, 409);
+    { ...selected, operationId: IDS.duplicateCheckIn })).status, 409);
   assert.equal(world.records.get(`goodwell/${appointment.id}`).charges.length, 1);
 });
 
-test('pharmacy-first finalized legacy visit previews revision zero and still needs the configured fee', async () => {
+test('pharmacy-first finalized legacy visit previews revision zero and still needs a manual fee', async () => {
   const world = setupBilling();
   const encounter = world.finalize();
   const handoff = await world.call('POST', `${API}/billing/fulfillment/read`, selected,
@@ -433,8 +493,7 @@ test('pharmacy-first finalized legacy visit previews revision zero and still nee
     { ...selected, operationId: IDS.receipt, expectedRevision: 1 })).status, 409);
 
   const recovered = await world.call('POST', `${API}/billing/consultation-charge`,
-    { ...selected, operationId: IDS.checkIn, expectedFeePaise: 200_000,
-      reason: 'legacy_check_in_missing' });
+    { ...selected, operationId: IDS.fee, expectedRevision: 1, amountPaise: 200_000 });
   assert.equal(recovered.status, 200, JSON.stringify(recovered.body));
   assert.equal(recovered.body.episode.consultationTotalPaise, 200_000);
   assert.equal(recovered.body.episode.totalPaise, 201_000);
@@ -447,15 +506,17 @@ test('finalized consultation with no medication can issue a paid fee-only receip
   const world = setupBilling();
   world.finalize().medications = [];
   assert.equal((await world.call('POST', `${API}/appointments/check-in`,
-    { ...selected, operationId: IDS.checkIn, expectedFeePaise: 200_000 })).status, 200);
+    { ...selected, operationId: IDS.checkIn })).status, 200);
+  assert.equal((await world.call('POST', `${API}/billing/consultation-charge`,
+    { ...selected, operationId: IDS.fee, expectedRevision: 1, amountPaise: 200_000 })).status, 200);
   const paid = await world.call('POST', `${API}/billing/payments`,
-    { ...selected, operationId: IDS.prepayment, expectedRevision: 1,
+    { ...selected, operationId: IDS.prepayment, expectedRevision: 2,
       amountPaise: 200_000, method: 'cash' });
   assert.equal(paid.status, 200, JSON.stringify(paid.body));
   assert.equal(paid.body.episode.pharmacyDisposition, 'not_required');
   assert.equal(paid.body.episode.checkoutStatus, 'ready_for_checkout');
   const receipt = await world.call('POST', `${API}/billing/receipt`,
-    { ...selected, operationId: IDS.receipt, expectedRevision: 2 });
+    { ...selected, operationId: IDS.receipt, expectedRevision: 3 });
   assert.equal(receipt.status, 200, JSON.stringify(receipt.body));
   assert.equal(receipt.body.receipt.totalPaise, 200_000);
   assert.equal(receipt.body.receipt.charges.length, 1);

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import type { ClinicRole } from './api';
-import { addLegacyConsultationCharge, BillingApiError, checkInAppointment, getBillingConfig, listBillingEpisodes, type BillingConfig, type Episode } from './billingApi';
-import { formatPaise } from './billingMoney';
+import { addConsultationCharge, BillingApiError, checkInAppointment, listBillingEpisodes, type Episode } from './billingApi';
+import { formatPaise, rupeesToPaise } from './billingMoney';
 import {
   createAppointment, getAppointments, getDoctors, pilotDateToday, pilotSlotHasEnded, pilotSlotToIso,
   registerPatient, searchPatients, WorkflowApiError,
@@ -76,8 +76,7 @@ function WorkflowDesk({ clinicSlug, csrfToken, role, onSessionLost, onPendingCha
   const [bookingError, setBookingError] = useState('');
   const [bookingSuccess, setBookingSuccess] = useState('');
   const [nowMs, setNowMs] = useState(Date.now);
-  const [feeConfig, setFeeConfig] = useState<BillingConfig | null>(null);
-  const [feeConfigError, setFeeConfigError] = useState('');
+  const [feeRupees, setFeeRupees] = useState('');
   const [billingEpisodes, setBillingEpisodes] = useState<Episode[]>([]);
   const [billingEpisodesLoading, setBillingEpisodesLoading] = useState(false);
   const [billingEpisodesError, setBillingEpisodesError] = useState('');
@@ -143,19 +142,6 @@ function WorkflowDesk({ clinicSlug, csrfToken, role, onSessionLost, onPendingCha
     }).finally(() => { if (!controller.signal.aborted) setQueueLoading(false); });
     return () => controller.abort();
   }, [clinicSlug, date, queueReload]);
-
-  useEffect(() => {
-    if (!canConfirmFee) return;
-    const controller = new AbortController();
-    setFeeConfig(null); setFeeConfigError('');
-    void getBillingConfig(clinicSlug, controller.signal).then((value) => { if (!controller.signal.aborted) setFeeConfig(value); })
-      .catch((error: unknown) => {
-        if (controller.signal.aborted) return;
-        if (error instanceof BillingApiError && error.status === 401) onSessionLost();
-        else setFeeConfigError('The clinic consultation fee could not be verified. Check-in and fee confirmation are unavailable.');
-      });
-    return () => controller.abort();
-  }, [clinicSlug, canConfirmFee, queueReload]);
 
   useEffect(() => {
     if (!canConfirmFee) return;
@@ -262,7 +248,7 @@ function WorkflowDesk({ clinicSlug, csrfToken, role, onSessionLost, onPendingCha
       const appointment = await createAppointment(clinicSlug, {
         patientId: selectedPatient.id, doctorId: selectedDoctorId, startAt, source,
       }, csrfToken);
-      setBookingSuccess(`${source === 'walk_in' ? 'Walk-in checked in' : 'Phone appointment booked'} for ${selectedPatient.fullName} at ${timeLabel(startAt)}. Server status: ${appointment.status}.${source === 'walk_in' ? ' Reception must confirm the standard consultation fee in the date queue.' : ''}`);
+      setBookingSuccess(`${source === 'walk_in' ? 'Walk-in checked in' : 'Phone appointment booked'} for ${selectedPatient.fullName} at ${timeLabel(startAt)}. Server status: ${appointment.status}.${source === 'walk_in' ? ' Reception or the assigned doctor can enter this visit’s consultation fee.' : ''}`);
       setTime('');
       setQueueReload((value) => value + 1);
     } catch (error) {
@@ -280,29 +266,31 @@ function WorkflowDesk({ clinicSlug, csrfToken, role, onSessionLost, onPendingCha
   }
 
   function chooseFeeAction(visit: Appointment, action: 'check_in' | 'add_fee') {
-    setFeeChoice({ visit, action }); setFeeConfirmed(false); setFeeError(''); setFeeSuccess('');
+    setFeeChoice({ visit, action }); setFeeRupees(''); setFeeConfirmed(false); setFeeError(''); setFeeSuccess('');
   }
   async function confirmArrivalOrFee() {
-    if (!feeChoice || !feeConfirmed || !feeConfig || feePending || feeBlocked || billingEpisodesLoading || billingEpisodesError) return;
+    if (!feeChoice || !feeConfirmed || feePending || feeBlocked || billingEpisodesLoading || billingEpisodesError) return;
+    const amountPaise = feeChoice.action === 'add_fee' ? rupeesToPaise(feeRupees) : null;
+    if (feeChoice.action === 'add_fee' && (!amountPaise || amountPaise > 100_000_000)) { setFeeError('Enter a consultation fee from ₹0.01 to ₹10,00,000.00.'); return; }
     const operationId = globalThis.crypto?.randomUUID?.();
     if (!operationId) { setFeeError('This browser cannot create a safe operation ID. No fee action was submitted.'); return; }
     setFeePending(true); setFeeError(''); setFeeSuccess('');
     try {
       const selected = { appointmentId: feeChoice.visit.id, clinicDate: date };
-      if (feeChoice.action === 'check_in') await checkInAppointment(clinicSlug, selected, feeConfig.consultationFeePaise, operationId, csrfToken);
-      else await addLegacyConsultationCharge(clinicSlug, selected, feeConfig.consultationFeePaise, operationId, csrfToken);
-      setFeeSuccess(feeChoice.action === 'check_in' ? 'Arrival and one standard consultation fee were confirmed by the clinic service.' : 'One standard consultation fee was confirmed by the clinic service.');
+      if (feeChoice.action === 'check_in') await checkInAppointment(clinicSlug, selected, operationId, csrfToken);
+      else await addConsultationCharge(clinicSlug, selected, billingEpisodes.find((episode) => episode.appointmentId === selected.appointmentId)?.revision ?? 0, amountPaise!, operationId, csrfToken);
+      setFeeSuccess(feeChoice.action === 'check_in' ? 'Patient checked in. Consultation fee can be added by reception or the assigned doctor.' : 'The entered consultation fee is now visible in Billing.');
       setFeeChoice(null); setFeeConfirmed(false); setQueueReload((value) => value + 1);
     } catch (error) {
       if (error instanceof BillingApiError && error.status === 401) onSessionLost();
       else {
         setFeeBlocked(true); setFeeConfirmed(false);
         setFeeError(error instanceof BillingApiError && error.status === 409
-          ? 'The visit, fee, or clinic configuration changed, or the fee was already posted. Refresh the queue and bill before another action.'
+          ? 'The visit or fee changed, or the fee was already posted. Refresh the queue and bill before another action.'
           : error instanceof BillingApiError && error.status === 400
             ? 'The clinic rejected this arrival or fee action. Check the visit details and refresh the queue.'
             : error instanceof BillingApiError && error.status === 403
-              ? 'This staff account or clinic is not allowed to confirm the consultation fee.'
+              ? 'This staff account or clinic is not allowed to perform this action.'
               : 'The outcome could not be confirmed. Refresh the queue and Billing tab before trying again; do not repeat this action blindly.');
       }
     } finally { setFeePending(false); }
@@ -357,14 +345,15 @@ function WorkflowDesk({ clinicSlug, csrfToken, role, onSessionLost, onPendingCha
       </div>
 
       <section className="workflow-card workflow-queue" aria-labelledby="queue-heading"><div className="workflow-card-head workflow-queue-head"><div><span className="workflow-step">03</span><h4 id="queue-heading">Date queue</h4><p>Bookings and walk-ins recorded for this clinic day.</p></div><div className="workflow-queue-controls"><label>Date<input type="date" value={date} onChange={(event) => { setDate(event.target.value); setFeeChoice(null); setFeeConfirmed(false); }} disabled={feePending} /></label><button className="workflow-link" type="button" onClick={() => { setFeeChoice(null); setFeeConfirmed(false); setQueueReload((value) => value + 1); }} disabled={queueLoading || feePending}>Refresh queue</button></div></div>
-        {canConfirmFee && <p className="workflow-hint">{feeConfig ? `Configured consultation fee: ${formatPaise(feeConfig.consultationFeePaise)}. Confirm it once when the patient arrives.` : feeConfigError || 'Verifying clinic consultation fee…'}</p>}
         {billingEpisodesError && <p role="alert" className="workflow-error">{billingEpisodesError}</p>}
-        {queueLoading ? <p className="workflow-muted" role="status">Loading queue…</p> : queueError ? <p className="workflow-error" role="alert">{queueError}</p> : queue.length === 0 ? <p className="workflow-empty" role="status">No visits on {date}. Bookings and walk-ins will appear here.</p> : <div className="workflow-table-wrap"><table className="workflow-table"><caption>Appointments for {date}, Asia/Kolkata</caption><thead><tr><th scope="col">Time</th><th scope="col">Patient</th><th scope="col">Doctor</th><th scope="col">Source</th><th scope="col">Status</th>{canConfirmFee && <th scope="col">Arrival and fee</th>}</tr></thead><tbody>{queue.map((visit) => {
+        {queueLoading ? <p className="workflow-muted" role="status">Loading queue…</p> : queueError ? <p className="workflow-error" role="alert">{queueError}</p> : queue.length === 0 ? <p className="workflow-empty" role="status">No visits on {date}. Bookings and walk-ins will appear here.</p> : <div className="workflow-table-wrap"><table className="workflow-table"><caption>Appointments for {date}, Asia/Kolkata</caption><thead><tr><th scope="col">Time</th><th scope="col">Patient</th><th scope="col">Doctor</th><th scope="col">Source</th><th scope="col">Status</th>{canConfirmFee && <th scope="col">Arrival / fee</th>}</tr></thead><tbody>{queue.map((visit) => {
           const episode = billingEpisodes.find((item) => item.appointmentId === visit.id);
           const action = episode?.consultationTotalPaise ? null : visit.status === 'booked' ? 'check_in' : visit.status === 'checked_in' ? 'add_fee' : null;
-          return <tr key={visit.id}><td>{timeLabel(visit.startAt)}</td><td>{visit.patientName}</td><td>{visit.doctorName}</td><td>{visit.source === 'walk_in' ? 'Walk-in' : 'Phone'}</td><td><span className="workflow-status">{visit.status.replaceAll('_', ' ')}</span></td>{canConfirmFee && <td>{action ? <button type="button" className="workflow-link" disabled={!feeConfig || billingEpisodesLoading || !!billingEpisodesError || feePending || feeBlocked} onClick={() => chooseFeeAction(visit, action)}>{action === 'check_in' ? 'Check in & confirm fee' : 'Confirm standard fee'}</button> : episode?.consultationTotalPaise ? 'Fee recorded' : '—'}</td>}</tr>;
+          return <tr key={visit.id}><td>{timeLabel(visit.startAt)}</td><td>{visit.patientName}</td><td>{visit.doctorName}</td><td>{visit.source === 'walk_in' ? 'Walk-in' : 'Phone'}</td><td><span className="workflow-status">{visit.status.replaceAll('_', ' ')}</span></td>{canConfirmFee && <td>{action ? <button type="button" className="workflow-link" disabled={billingEpisodesLoading || !!billingEpisodesError || feePending || feeBlocked} onClick={() => chooseFeeAction(visit, action)}>{action === 'check_in' ? 'Check in' : 'Add consultation fee'}</button> : episode?.consultationTotalPaise ? formatPaise(episode.consultationTotalPaise) : '—'}</td>}</tr>;
         })}</tbody></table></div>}
-        {feeChoice && canConfirmFee && <div className="workflow-fee-confirm"><h5>{feeChoice.action === 'check_in' ? 'Confirm arrival and consultation fee' : 'Confirm standard consultation fee'}</h5><p><strong>{feeChoice.visit.patientName}</strong> · {feeChoice.visit.doctorName} · {timeLabel(feeChoice.visit.startAt)}</p><p>Clinic-configured fee: <strong>{feeConfig ? formatPaise(feeConfig.consultationFeePaise) : 'Unavailable'}</strong>. This opens a bill but does not mark it paid.</p><label><input type="checkbox" checked={feeConfirmed} onChange={(event) => setFeeConfirmed(event.target.checked)} disabled={feePending || !feeConfig} /> I confirm the patient visit and standard consultation fee.</label><div className="workflow-fee-actions"><button type="button" className="workflow-action" disabled={!feeConfirmed || !feeConfig || feePending || feeBlocked || billingEpisodesLoading || !!billingEpisodesError} onClick={() => void confirmArrivalOrFee()}>{feePending ? 'Confirming…' : feeChoice.action === 'check_in' ? 'Confirm check-in and fee' : 'Add consultation fee once'}</button><button type="button" className="workflow-link" onClick={() => { setFeeChoice(null); setFeeConfirmed(false); }} disabled={feePending}>Cancel</button></div></div>}
+        {feeChoice && canConfirmFee && <div className="workflow-fee-confirm"><h5>{feeChoice.action === 'check_in' ? 'Confirm patient arrival' : 'Add consultation fee'}</h5><p><strong>{feeChoice.visit.patientName}</strong> · {feeChoice.visit.doctorName} · {timeLabel(feeChoice.visit.startAt)}</p>
+          {feeChoice.action === 'add_fee' ? <><p>Enter the fee for this visit. Reception and the assigned doctor share the same saved amount.</p><label>Consultation fee (₹)<input inputMode="decimal" value={feeRupees} onChange={(event) => { setFeeRupees(event.target.value); setFeeConfirmed(false); }} placeholder="0.00" disabled={feePending} /></label></> : <p>This marks the patient as arrived. Add the consultation fee separately when it is known.</p>}
+          <label><input type="checkbox" checked={feeConfirmed} onChange={(event) => setFeeConfirmed(event.target.checked)} disabled={feePending} /> {feeChoice.action === 'check_in' ? 'I confirm this patient has arrived.' : 'I confirm this fee for the selected visit.'}</label><div className="workflow-fee-actions"><button type="button" className="workflow-action" disabled={!feeConfirmed || feePending || feeBlocked || billingEpisodesLoading || !!billingEpisodesError} onClick={() => void confirmArrivalOrFee()}>{feePending ? 'Saving…' : feeChoice.action === 'check_in' ? 'Confirm check-in' : 'Save consultation fee'}</button><button type="button" className="workflow-link" onClick={() => { setFeeChoice(null); setFeeConfirmed(false); }} disabled={feePending}>Cancel</button></div></div>}
         {feeError && <p className="workflow-error" role="alert">{feeError}</p>}{feeSuccess && <p className="workflow-success" role="status">{feeSuccess}</p>}
       </section>
     </div>

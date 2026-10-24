@@ -134,8 +134,12 @@ export async function handleBilling(input: HttpInput, endpoint: string, slug: st
   if (!billing) return reply(503, { error: 'Billing unavailable' });
   const reception = member.role === 'clinic_admin' || member.role === 'receptionist';
   const pharmacy = member.role === 'pharmacist';
+  const doctor = member.role === 'doctor';
   const pharmacyRoute = endpoint.startsWith('billing/fulfillment');
-  if (pharmacyRoute ? !pharmacy : !reception) return reply(403, { error: 'Role not allowed' });
+  const doctorFeeRoute = endpoint === 'billing/consultation-fee/read' || endpoint === 'billing/consultation-charge';
+  if (pharmacyRoute ? !pharmacy : !(reception || (doctorFeeRoute && doctor))) {
+    return reply(403, { error: 'Role not allowed' });
+  }
   const readGet = endpoint === 'billing/config' || endpoint === 'billing/episodes';
   if ((readGet && input.method !== 'GET') || (!readGet && input.method !== 'POST')) {
     return reply(404, { error: 'Not found' });
@@ -169,10 +173,24 @@ export async function handleBilling(input: HttpInput, endpoint: string, slug: st
   if (!request || !identity(request) || (input.queryString ?? '')) return reply(400, { error: 'Invalid billing request' });
   const appointment = await findAppointment(workflow, slug, request.clinicDate, request.appointmentId);
   if (!appointment) return reply(404, { error: 'Appointment not found' });
+  if (doctor) {
+    const assigned = await workflow.getDoctor(slug, appointment.doctorId);
+    if (!assigned?.active || assigned.staffSub !== member.sub) {
+      return reply(403, { error: 'Doctor assignment denied' });
+    }
+  }
   const [records, encounter] = await Promise.all([
     billing.load(slug, appointment.id), workflow.getEncounter(slug, appointment.clinicDate, appointment.id),
   ]);
+  if (doctor && encounter?.status === 'finalized' && encounter.finalizedBySub !== member.sub) {
+    return reply(403, { error: 'Doctor assignment denied' });
+  }
   const existing = checked(records, appointment);
+  if (endpoint === 'billing/consultation-fee/read' && input.method === 'POST') {
+    if (!keys(request, ['appointmentId', 'clinicDate'])) return reply(400, { error: 'Invalid fee read' });
+    return reply(200, { amountPaise: existing?.consultationTotalPaise || null,
+      revision: existing?.revision ?? 0 });
+  }
   if (endpoint === 'billing/read' && input.method === 'POST') {
     if (!keys(request, ['appointmentId', 'clinicDate'])) return reply(400, { error: 'Invalid billing read' });
     return existing ? reply(200, { episode: view(existing, appointment, encounter),
@@ -222,36 +240,40 @@ export async function handleBilling(input: HttpInput, endpoint: string, slug: st
 
   if (kind === 'check_in' || kind === 'consultation_charge') {
     const manual = kind === 'consultation_charge';
-    if (!keys(request, manual ? ['appointmentId', 'clinicDate', 'operationId', 'expectedFeePaise', 'reason'] :
-      ['appointmentId', 'clinicDate', 'operationId', 'expectedFeePaise']) ||
-        (manual && request.reason !== 'legacy_check_in_missing') ||
-        !validPaise(request.expectedFeePaise) || request.expectedFeePaise === 0) {
+    if (!keys(request, manual ? ['appointmentId', 'clinicDate', 'operationId', 'expectedRevision', 'amountPaise'] :
+      ['appointmentId', 'clinicDate', 'operationId']) ||
+        (manual && (!Number.isSafeInteger(request.expectedRevision) ||
+          !validPaise(request.amountPaise) || request.amountPaise === 0))) {
       return reply(400, { error: 'Invalid consultation fee request' });
     }
-    if (base.consultationTotalPaise > 0 || records.charges.some((charge) => charge.kind === 'consultation')) {
+    if (manual && request.expectedRevision !== base.revision) {
+      return reply(409, { error: 'Billing revision changed' });
+    }
+    if (manual && (base.consultationTotalPaise > 0 ||
+        records.charges.some((charge) => charge.kind === 'consultation'))) {
       return reply(409, { error: 'Consultation fee already recorded' });
     }
-    if (records.charges.length >= 50) return reply(409, { error: 'Billing record limit reached' });
+    if (manual && records.charges.length >= 50) return reply(409, { error: 'Billing record limit reached' });
     if (manual && appointment.status !== 'checked_in' &&
         !(appointment.status === 'booked' && encounter?.status === 'finalized')) {
       return reply(409, { error: 'Visit has not arrived or concluded' });
     }
-    const clinicConfig = await billing.getConfig(slug);
-    if (!clinicConfig) return reply(503, { error: 'Clinic billing configuration unavailable' });
-    if (clinicConfig.consultationFeePaise !== request.expectedFeePaise) {
-      return reply(409, { error: 'Clinic consultation fee changed' });
-    }
-    next.consultationTotalPaise = clinicConfig.consultationFeePaise;
-    const charge: BillCharge = { id: 'CONSULTATION', kind: 'consultation',
-      description: 'Clinic consultation', quantity: 1, quantityUnit: 'visit',
-      unitPricePaise: clinicConfig.consultationFeePaise, amountPaise: clinicConfig.consultationFeePaise,
-      source: 'clinic_config', createdAt: now.toISOString(), actorSub: member.sub };
-    write.charges = [charge];
-    write.configVersion = clinicConfig.version;
-    if (manual && appointment.status === 'booked') write.encounterRevision = encounter!.revision;
-    if (!manual && appointment.status === 'booked') write.checkInBooked = true;
-    if (appointment.status === 'checked_in') write.requireCheckedIn = true;
-    if (!manual && appointment.status !== 'booked' && appointment.status !== 'checked_in') {
+    if (manual) {
+      if (!validPaise(totalPaise(base) + (request.amountPaise as number))) {
+        return reply(400, { error: 'Billing amount limit exceeded' });
+      }
+      next.consultationTotalPaise = request.amountPaise as number;
+      const charge: BillCharge = { id: 'CONSULTATION', kind: 'consultation',
+        description: 'Clinic consultation', quantity: 1, quantityUnit: 'visit',
+        unitPricePaise: request.amountPaise as number, amountPaise: request.amountPaise as number,
+        source: 'staff_manual', createdAt: now.toISOString(), actorSub: member.sub };
+      write.charges = [charge];
+      if (appointment.status === 'booked') write.encounterRevision = encounter!.revision;
+      if (appointment.status === 'checked_in') write.requireCheckedIn = true;
+      if (doctor) write.doctorStaffSub = member.sub;
+    } else if (appointment.status === 'booked') {
+      write.checkInBooked = true;
+    } else {
       return reply(409, { error: 'Appointment cannot be checked in' });
     }
     successBody = manual ? { episode: view(next, appointment, encounter) } :

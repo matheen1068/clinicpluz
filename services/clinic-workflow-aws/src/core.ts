@@ -301,7 +301,7 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
       try {
         if (!safeEqual(input.headers['x-clinicpluz-edge-key'] ?? '', config.edgeKey)) return result(403, { error: 'Forbidden' });
         if (input.headers.origin && input.headers.origin !== config.publicOrigin) return result(403, { error: 'Origin rejected' });
-        const match = /^\/api\/workflow\/clinics\/([a-z0-9-]+)\/(doctors|patients(?:\/search)?|appointments(?:\/check-in)?|billing\/(?:config|episodes|read|consultation-charge|fulfillment(?:\/read)?|payments|receipt)|consultations(?:\/(?:read|vitals|draft|finalize|medicines\/search|history\/(?:list|detail)|prescriptions(?:\/read|\/email(?:\/preview)?)?))?)$/.exec(input.path);
+        const match = /^\/api\/workflow\/clinics\/([a-z0-9-]+)\/(dashboard|doctors|patients(?:\/search)?|appointments(?:\/check-in)?|billing\/(?:config|episodes|read|consultation-fee\/read|consultation-charge|fulfillment(?:\/read)?|payments|receipt)|consultations(?:\/(?:read|vitals|draft|finalize|medicines\/search|history\/(?:list|detail)|prescriptions(?:\/read|\/email(?:\/preview)?)?))?)$/.exec(input.path);
         if (!match || !slug(match[1])) return result(404, { error: 'Not found' });
         const clinicSlug = match[1];
         const endpoint = match[2];
@@ -327,8 +327,10 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
         const module = isBilling ? 'billing' : isConsultation ? 'consultations' : endpoint.startsWith('patients') ? 'patient_intake' : 'appointments';
         if (!modules || modules.clinicSlug !== clinicSlug || modules[module] !== true) return result(403, { error: 'Module unavailable' });
         if (isBilling) {
+          const doctorFee = endpoint === 'billing/consultation-fee/read' || endpoint === 'billing/consultation-charge';
           if (endpoint.startsWith('billing/fulfillment') ? member.role !== 'pharmacist' :
-              member.role !== 'clinic_admin' && member.role !== 'receptionist') {
+              member.role !== 'clinic_admin' && member.role !== 'receptionist' &&
+              !(doctorFee && member.role === 'doctor')) {
             return result(403, { error: 'Role not allowed' });
           }
           if (endpoint.startsWith('billing/fulfillment') && modules.consultations !== true) {
@@ -343,6 +345,13 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
               member.role !== 'doctor') {
             return result(403, { error: 'Role not allowed' });
           }
+        } else if (endpoint === 'dashboard') {
+          if (member.role !== 'clinic_admin' && member.role !== 'receptionist' && member.role !== 'doctor') {
+            return result(403, { error: 'Role not allowed' });
+          }
+          if (member.role === 'doctor' && modules.consultations !== true) {
+            return result(403, { error: 'Module unavailable' });
+          }
         } else {
           const viewing = input.method === 'GET' || endpoint === 'patients/search';
           if (!(viewing ? VIEW_ROLES : WRITE_ROLES).has(member.role)) return result(403, { error: 'Role not allowed' });
@@ -356,6 +365,32 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
         }
 
         if (isBilling) return handleBilling(input, endpoint, clinicSlug, clinic, member, store, billing, now());
+
+        if (endpoint === 'dashboard' && input.method === 'GET') {
+          const date = singleQuery(input.queryString, 'date');
+          if (!date || !calendarDate(date)) return result(400, { error: 'Invalid date' });
+          const [appointments, statuses] = await Promise.all([
+            store.listAppointments(clinicSlug, date), store.listEncounterStatuses(clinicSlug, date),
+          ]);
+          let visible = appointments;
+          if (member.role === 'doctor') {
+            const assigned = new Set((await store.listDoctors(clinicSlug))
+              .filter((doctor) => doctor.active && doctor.staffSub === member.sub).map((doctor) => doctor.id));
+            visible = appointments.filter((appointment) => assigned.has(appointment.doctorId));
+          }
+          const counts = { total: visible.length, booked: 0, checkedIn: 0, pending: 0,
+            completed: 0, phone: 0, walkIn: 0 };
+          for (const appointment of visible) {
+            const finalized = statuses.get(appointment.id) === 'finalized';
+            if (appointment.status === 'checked_in') counts.checkedIn += 1;
+            if (appointment.source === 'phone') counts.phone += 1;
+            else counts.walkIn += 1;
+            if (finalized) counts.completed += 1;
+            else if (appointment.status === 'checked_in') counts.pending += 1;
+            else counts.booked += 1;
+          }
+          return result(200, { date, scope: member.role === 'doctor' ? 'doctor' : 'clinic', counts });
+        }
 
         if (input.method === 'GET' && endpoint === 'doctors' && !(input.queryString ?? '')) {
           const doctors = await store.listDoctors(clinicSlug);

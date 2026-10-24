@@ -8,13 +8,13 @@ Status: local synthetic-pilot implementation awaiting CloudShell build, staging 
 - Pharmacy charges only for medicines and quantities actually handed to the patient, including partial fills. A prescription is a clinical order, not a sale.
 - The doctor remains the only author of the prescription. Pharmacy records fulfillment and prices without changing the finalized clinical record.
 - The existing `goodwell.admin` account can perform reception duties in the pilot; a new receptionist identity is not needed for this slice.
-- Reception confirms a standard consultation fee at patient check-in. It may add the fee manually when check-in was not captured; the server still permits at most one consultation charge for that appointment.
-- Goodwell's provisional standard consultation fee for the synthetic demo is INR 2,000. Store it as 200,000 paise; make the fee clinic-configurable rather than a global code constant.
+- Reception checks the patient in without posting a fee. Reception or the assigned doctor enters that visit's consultation fee manually in integer paise; the server permits one consultation charge per appointment.
+- There is no standard consultation amount for new visits. The amount saved by either role appears in the same reception billing episode.
 - Goodwell's clinic and pharmacy use the same business and GST registration. The product may show one combined checkout, subject to review of the actual tax document format.
 
 ## Patient journey
 
-1. Reception books or checks in a patient. The appointment is the billing episode. At check-in, reception confirms the standard consultation fee and the system stores a price snapshot. If an older booking has no recorded check-in, reception can add the same charge manually; a duplicate is rejected.
+1. Reception books or checks in a patient. The appointment is the billing episode. After arrival, reception or the assigned doctor records the actual consultation fee once. A finalized older booking can receive its missing fee. A duplicate or stale revision is rejected.
 2. The assigned doctor completes and finalizes the encounter. If it contains medicines, the finalized order appears in the pharmacist's existing handoff queue.
 3. The pharmacist records each product and quantity actually supplied, its unit price, and whether the order is completely or partly filled. Unsupplied items remain visible as not supplied and contribute zero to the charge. The system posts pharmacy charge lines to the same billing episode and makes it appear in the reception billing queue automatically.
 4. Reception reviews the consultation and pharmacy line items and records the received payment. Money collected at check-in is an open-episode payment, even when it covers the current consultation charge: a final combined receipt waits until the consultation and pharmacy outcome are known and the balance is zero. The customer-facing final print view shows both sections and the payment confirmation. The pharmacist can print a pharmacy item slip if needed, but it must not claim that the combined bill is paid.
@@ -26,14 +26,14 @@ This flow records cash, UPI, or card payments manually. It does not verify a ban
 
 | Role | Pilot screen | Allowed actions |
 | --- | --- | --- |
-| Doctor | Consultations | Author and finalize clinical notes and prescriptions; no price or payment controls. |
+| Doctor | Consultations and own visit fee | Author and finalize clinical notes and prescriptions; optionally enter the consultation fee for an assigned visit. No payment controls or access to another doctor's bill. |
 | Pharmacist | Prescriptions / fulfillment | Read finalized medicines; record actual supplied product, quantity, and charge; view fulfillment status. No clinical notes, patient contact details, or paid control. |
 | Receptionist or clinic admin | Billing dashboard | See doctor fee and posted pharmacy charges; record payment; print the paid customer receipt. Cannot edit the doctor's prescription. |
 | Billing staff | Later | Separate access can be enabled after its exact clinic duties and account are defined. |
 
 The billing dashboard should group episodes by **Awaiting consultation/pharmacy**, **Ready for checkout**, **Partly paid**, and **Paid**, with a date filter and a clear outstanding amount. Pharmacy needs **To prepare**, **Partly supplied**, **Not purchased**, and **Supplied** views. A fee prepayment does not make the combined episode final. A screen must not label an empty slot as available or an unverified payment as received.
 
-Current workflow has no arrival check-in action for an existing phone booking: phone appointments remain `booked`, while a new walk-in starts `checked_in`. Add a receptionist **Check in** action for booked appointments as the first implementation dependency. Recording arrival and the standard fee must be coordinated so a retry cannot create a second charge.
+Phone appointments remain `booked` until reception checks them in; a new walk-in starts `checked_in`. Check-in and fee entry are separate actions. Durable operation IDs prevent a retry from changing arrival or posting a second charge.
 
 ## Record and API boundaries
 
@@ -45,9 +45,9 @@ Current workflow has no arrival check-in action for an existing phone booking: p
 
 ## Price and tax boundary
 
-The pilot can start with a clinic-configured standard consultation fee, confirmed by reception at check-in, and pharmacist-entered prices for synthetic supplied items. Each price needs an audit trail. Doctor-specific fee schedules can follow. The doctor does not set pharmacy prices. A later clinic-specific price and stock catalogue can replace manual pricing without changing finalized prescription records. Substitutions need an explicit clinic-approved process; they must not silently rewrite the doctor's order.
+The pilot uses a manual per-visit consultation fee and pharmacist-entered prices for synthetic supplied items. Each price needs an audit trail. The assigned doctor may set only their visit's consultation fee and never pharmacy prices. A later clinic-specific price and stock catalogue can replace manual pricing without changing finalized prescription records. Substitutions need an explicit clinic-approved process; they must not silently rewrite the doctor's order.
 
-Pilot defaults: a clinic admin sets the standard fee; reception can add the fee to a visit but cannot silently change its price. Pharmacy records a manual unit price for each synthetic item actually supplied. There are no discounts in the first slice. The pharmacist may record handover before reception checkout, as described for this clinic, and the episode remains visibly unpaid until reception confirms the money received.
+Pilot defaults: reception or the assigned doctor enters the visit fee once. The saved amount cannot be overwritten; a mistaken amount needs a later reviewed correction, and payments or receipts remain immutable. Pharmacy records a manual unit price for each synthetic item actually supplied. There are no discounts in the first slice. The pharmacist may record handover before reception checkout, as described for this clinic, and the episode remains visibly unpaid until reception confirms the money received.
 
 Build one **checkout summary** for the patient, with doctor and pharmacy sections. Whether it can also be a single statutory invoice depends on the clinic/pharmacy supplier identity, registration, tax treatment, and the clinic accountant's approved format. GST invoice rules include serial numbering and item-level goods/services details; no hard-coded tax rate or claim of compliance belongs in this synthetic pilot. Keep tax category and document type explicit so the final format can be reviewed before real use. See [CBIC invoice rules](https://cbic-gst.gov.in/gst-invoice-rules.html) and the [GST portal's goods-and-services invoice FAQ](https://tutorial.gst.gov.in/userguide/returns/GSTR_1.htm).
 
@@ -60,5 +60,5 @@ Build one **checkout summary** for the patient, with doctor and pharmacy section
 
 ## Decisions for a later clinic policy review
 
-- What authority should reception have for discounts, fee overrides, and refunds? The first slice grants none.
+- What correction authority should reception have for mistaken fee entries, discounts, and refunds? This slice grants none.
 - Should the real clinic permit medicine handover before checkout is paid? The synthetic pilot allows it and shows the unpaid balance; the real policy needs clinic approval.

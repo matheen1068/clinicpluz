@@ -428,6 +428,20 @@ select:focus-visible, input:focus-visible { outline: 3px solid #82d6a3; outline-
 .workflow-fee-confirm label, .billing-confirm { display: flex; align-items: flex-start; gap: 9px; color: #254a38; font-size: 12px; line-height: 1.5; }
 .workflow-fee-confirm input[type="checkbox"], .billing-confirm input[type="checkbox"] { flex: 0 0 auto; margin-top: 2px; accent-color: #18805a; }
 .workflow-fee-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 14px; }
+.workflow-fee-confirm label:has(input:not([type="checkbox"])), .billing-action-box label:has(input:not([type="checkbox"])), .doctor-fee-form label:has(input:not([type="checkbox"])) { display: grid; gap: 6px; max-width: 290px; margin: 12px 0; font-weight: 700; }
+.workflow-fee-confirm input:not([type="checkbox"]), .billing-action-box input:not([type="checkbox"]), .doctor-fee-form input:not([type="checkbox"]) { width: 100%; min-height: 40px; padding: 9px 11px; border: 1px solid #c6d9cb; border-radius: 8px; background: #fff; color: #204735; font: inherit; }
+.doctor-fee-form .billing-confirm { margin: 14px 0; }
+.consultation-fee .workflow-action { width: auto; }
+.dashboard-panel { margin-top: 17px; }
+.dashboard-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px; }
+.dashboard-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 20px; }
+.dashboard-stat { display: grid; gap: 7px; padding: 18px; border: 1px solid #d6e8da; border-radius: 12px; background: #f5faf6; }
+.dashboard-stat span { color: #416d55; font-size: 12px; font-weight: 700; }
+.dashboard-stat strong { color: #1e583c; font-size: clamp(28px, 3vw, 42px); line-height: 1; }
+.dashboard-stat small, .dashboard-footnote { color: #688071; font-size: 12px; line-height: 1.5; }
+.dashboard-footnote { margin: 16px 0 0; }
+@media (max-width: 720px) { .dashboard-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 430px) { .dashboard-stats { grid-template-columns: 1fr; } }
 .workflow-fee-actions .workflow-action, .billing-action-box .workflow-action, .pharmacy-fulfillment .workflow-action { width: auto; min-height: 39px; }
 .billing-head, .pharmacy-fulfillment-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 14px; }
 .billing-groups { display: grid; gap: 18px; }

@@ -108,6 +108,10 @@ export class DynamoBillingStore implements BillingStore {
       ExpressionAttributeNames: { '#version': 'version' },
       ExpressionAttributeValues: { ':version': n(write.configVersion), ':currency': s('INR'),
         ':fee': n(nextEpisode.consultationTotalPaise) } } });
+    if (write.doctorStaffSub) txn.push({ ConditionCheck: { TableName: this.table,
+      Key: { pk: s(`CLINIC#${slug}#DOCTORS`), sk: s(`DOCTOR#${appointment.doctorId}`) },
+      ConditionExpression: 'attribute_exists(pk) AND active = :active AND staffSub = :sub',
+      ExpressionAttributeValues: { ':active': { BOOL: true }, ':sub': s(write.doctorStaffSub) } } });
     if (write.encounterRevision !== undefined) txn.push({ ConditionCheck: { TableName: this.table,
       Key: { pk: s(`CLINIC#${slug}#ENCOUNTERS#${appointment.clinicDate}`),
         sk: s(`APPOINTMENT#${appointment.id}`) },
