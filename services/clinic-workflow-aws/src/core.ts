@@ -337,9 +337,13 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
             return result(403, { error: 'Module unavailable' });
           }
         } else if (isConsultation) {
+          const vitalStaff = (member.role === 'receptionist' || member.role === 'clinic_admin') &&
+            (endpoint === 'consultations' || endpoint === 'consultations/read' || endpoint === 'consultations/vitals');
           if (isPrescriptionEmail ? !PRESCRIPTION_EMAIL_ROLES.has(member.role) :
               isPrescriptionHandoff ? !PRESCRIPTION_ROLES.has(member.role) :
-                member.role !== 'nurse' && member.role !== 'doctor') return result(403, { error: 'Role not allowed' });
+                member.role !== 'nurse' && member.role !== 'doctor' && !vitalStaff) {
+            return result(403, { error: 'Role not allowed' });
+          }
           if ((endpoint === 'consultations/draft' || endpoint === 'consultations/finalize' ||
               endpoint === 'consultations/medicines/search' || endpoint.startsWith('consultations/history/')) &&
               member.role !== 'doctor') {

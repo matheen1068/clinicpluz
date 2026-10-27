@@ -397,12 +397,12 @@ test('patient and appointment data cannot be read through a different clinic pat
     requestContext: { http: { method: 'GET' } } }), null);
 });
 
-test('consultation queue and read enforce clinician role, entitlement, and assigned doctor mapping', async () => {
+test('consultation queue and read enforce vitals staff scope, entitlement, and assigned doctor mapping', async () => {
   const world = setup();
   const own = await seedAppointment(world, 'd1');
   await seedAppointment(world, 'd2');
   const query = { queryString: 'date=2026-10-10' };
-  assert.equal((await world.call('GET', consultationBase, undefined, query)).status, 403);
+  assert.equal((await world.call('GET', consultationBase, undefined, query)).status, 200);
   const nurseQueue = await world.call('GET', consultationBase, undefined, { ...query, ...nurseSession });
   assert.equal(nurseQueue.status, 200);
   assert.equal(nurseQueue.body.items.length, 2);
@@ -429,10 +429,55 @@ test('consultation queue and read enforce clinician role, entitlement, and assig
   assert.equal((await world.call('GET', `${ROOT}/goodwell/doctors`)).status, 200);
   world.modules.get('goodwell').consultations = true;
   world.members.get('goodwell/reception').role = 'clinic_admin';
-  assert.equal((await world.call('POST', `${consultationBase}/read`, own)).status, 403);
+  assert.equal((await world.call('POST', `${consultationBase}/read`, own)).status, 200);
+  assert.equal((await world.call('POST', `${consultationBase}/read`, own)).body.encounter.note, undefined);
   assert.equal((await world.call('POST', `${consultationBase}/draft`,
     { ...own, expectedRevision: 0, note, medications })).status, 403);
   assert.equal((await world.call('POST', `${ROOT}/blesswell/consultations/read`, own, nurseSession)).status, 403);
+});
+
+test('reception and clinic admin save shared vitals without access to doctor notes or prescriptions', async () => {
+  const world = setup();
+  const selected = await seedAppointment(world);
+  const first = await world.call('POST', `${consultationBase}/vitals`, {
+    ...selected, expectedRevision: 0, vitals: { observedAt: NOW.toISOString(), pulseBpm: 72 },
+  });
+  assert.equal(first.status, 200);
+  assert.equal(first.body.encounter.vitals.recordedByDisplayName, 'Demo Receptionist');
+  assert.equal(first.body.encounter.note, undefined);
+  assert.equal(first.body.encounter.medications, undefined);
+  assert.equal((await world.call('POST', `${consultationBase}/read`, selected, doctorSession))
+    .body.encounter.vitals.pulseBpm, 72);
+  assert.equal((await world.call('POST', `${consultationBase}/draft`, {
+    ...selected, expectedRevision: 1, note, medications,
+  })).status, 403);
+  assert.equal((await world.call('POST', `${consultationBase}/medicines/search`, { query: 'Demo' })).status, 403);
+  assert.equal((await world.call('POST', `${consultationBase}/history/list`, selected)).status, 403);
+  assert.equal((await world.call('POST', `${ROOT}/blesswell/consultations/read`, selected)).status, 403);
+
+  const draft = await world.call('POST', `${consultationBase}/draft`, {
+    ...selected, expectedRevision: 1, note, medications,
+  }, doctorSession);
+  assert.equal(draft.status, 200);
+  assert.equal((await world.call('POST', `${consultationBase}/vitals`, {
+    ...selected, expectedRevision: 1, vitals: { observedAt: NOW.toISOString(), pulseBpm: 74 },
+  })).status, 409);
+  const receptionRead = await world.call('POST', `${consultationBase}/read`, selected);
+  assert.equal(receptionRead.body.encounter.revision, 2);
+  assert.equal(receptionRead.body.encounter.note, undefined);
+  assert.equal(receptionRead.body.printablePrescription, undefined);
+
+  world.members.get('goodwell/reception').role = 'clinic_admin';
+  const adminSaved = await world.call('POST', `${consultationBase}/vitals`, {
+    ...selected, expectedRevision: 2, vitals: { observedAt: NOW.toISOString(), pulseBpm: 74 },
+  });
+  assert.equal(adminSaved.status, 200);
+  const doctorRead = await world.call('POST', `${consultationBase}/read`, selected, doctorSession);
+  assert.equal(doctorRead.body.encounter.vitals.pulseBpm, 74);
+  assert.equal(doctorRead.body.encounter.note.assessment, note.assessment);
+  assert.equal((await world.call('POST', `${consultationBase}/finalize`, {
+    ...selected, expectedRevision: 3,
+  })).status, 403);
 });
 
 test('nurse vitals, doctor draft, and doctor finalization preserve attribution and print only finalized medicines', async () => {
@@ -821,10 +866,16 @@ test('reception, clinic admin, and pharmacy can see only finalized prescription 
     assert.equal(detail.body.encounter, undefined);
     assert.equal((await world.call('POST', detailPath, draftOnly, staff)).status, 404);
     assert.equal((await world.call('POST', detailPath, withoutRx, staff)).status, 404);
-    assert.equal((await world.call('POST', `${consultationBase}/read`, withRx, staff)).status, 403);
+    const vitalsRead = await world.call('POST', `${consultationBase}/read`, withRx, staff);
+    assert.equal(vitalsRead.status, staff === pharmacistSession ? 403 : 200);
+    if (staff !== pharmacistSession) {
+      assert.equal(vitalsRead.body.encounter.note, undefined);
+      assert.equal(vitalsRead.body.encounter.medications, undefined);
+    }
     assert.equal((await world.call('POST', `${consultationBase}/history/list`, withRx, staff)).status, 403);
     assert.equal((await world.call('POST', `${consultationBase}/vitals`,
-      { ...withRx, expectedRevision: 2, vitals: { observedAt: NOW.toISOString(), pulseBpm: 72 } }, staff)).status, 403);
+      { ...withRx, expectedRevision: 2, vitals: { observedAt: NOW.toISOString(), pulseBpm: 72 } }, staff)).status,
+      staff === pharmacistSession ? 403 : 409);
     assert.equal((await world.call('POST', `${consultationBase}/draft`,
       { ...withRx, expectedRevision: 2, note, medications }, staff)).status, 403);
   }
@@ -841,7 +892,10 @@ test('reception, clinic admin, and pharmacy can see only finalized prescription 
   assert.equal(adminDetail.body.printablePrescription.patient.email, undefined);
   assert.equal(adminDetail.body.encounter, undefined);
   assert.equal((await world.call('POST', detailPath, draftOnly)).status, 404);
-  assert.equal((await world.call('POST', `${consultationBase}/read`, withRx)).status, 403);
+  const adminVitalsRead = await world.call('POST', `${consultationBase}/read`, withRx);
+  assert.equal(adminVitalsRead.status, 200);
+  assert.equal(adminVitalsRead.body.encounter.note, undefined);
+  assert.equal(adminVitalsRead.body.encounter.medications, undefined);
   assert.equal((await world.call('POST', `${consultationBase}/draft`,
     { ...withRx, expectedRevision: 2, note, medications })).status, 403);
 });
