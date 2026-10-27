@@ -262,6 +262,11 @@ select:focus-visible, input:focus-visible { outline: 3px solid #82d6a3; outline-
 .workspace-nav button { min-height: 38px; padding: 0 17px; color: #557363; border: 0; border-radius: 9px; background: transparent; font-size: 13px; font-weight: 740; }
 .workspace-nav button { flex: 0 0 auto; }
 .workspace-nav button[aria-current="page"] { color: #155b40; background: #fff; box-shadow: 0 3px 12px rgba(18, 74, 44, .1); }
+.consultation-tabs { display: flex; gap: 6px; max-width: 100%; margin: 0 0 20px; padding: 5px; border: 1px solid #d5e5da; border-radius: 12px; background: #edf4ee; overflow-x: auto; }
+.consultation-tabs button { flex: 0 0 auto; min-height: 40px; padding: 0 15px; color: #557363; border: 0; border-radius: 9px; background: transparent; font: inherit; font-size: 12px; font-weight: 740; cursor: pointer; }
+.consultation-tabs button[aria-current="page"] { color: #155b40; background: #fff; box-shadow: 0 3px 12px rgba(18, 74, 44, .1); }
+.consultation-tabs button:disabled { color: #9bad9f; cursor: not-allowed; }
+.consultation-tabs button:focus-visible { outline: 3px solid #249466; outline-offset: 2px; }
 .consultation-layout { display: grid; grid-template-columns: minmax(275px, 32%) minmax(0, 1fr); align-items: start; gap: 20px; }
 .consultation-layout.is-doctor { grid-template-columns: minmax(0, 1fr); }
 .consultation-main { display: grid; gap: 17px; min-width: 0; }
@@ -309,6 +314,7 @@ select:focus-visible, input:focus-visible { outline: 3px solid #82d6a3; outline-
 .consultation-identity p { color: #667f72; font-size: 12px; line-height: 1.5; }
 .consultation-identity-top p { margin: 0; }
 .consultation-meta { margin: 12px 0 0; }
+.consultation-refresh { margin-top: 12px; }
 .consultation-status { padding: 7px 11px; color: #946d22; border: 1px solid #f0dfb7; border-radius: 999px; background: #fff8e9; font-size: 11px; font-weight: 800; white-space: nowrap; }
 .consultation-status.is-final { color: #1d7550; border-color: #bce3cb; background: #eaf8ee; }
 .consultation-section .workflow-card-head { margin-bottom: 16px; }
