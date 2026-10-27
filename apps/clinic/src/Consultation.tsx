@@ -22,6 +22,13 @@ interface Props {
   onPendingChange?: (pending: boolean) => void;
 }
 
+type DoctorSection = 'schedule' | 'overview' | 'vitals' | 'notes' | 'medicines' | 'review';
+const DOCTOR_SECTIONS: { id: DoctorSection; label: string }[] = [
+  { id: 'schedule', label: 'Schedule' }, { id: 'overview', label: 'Visit overview' },
+  { id: 'vitals', label: 'Vitals' }, { id: 'notes', label: 'Consultation' },
+  { id: 'medicines', label: 'Prescription' }, { id: 'review', label: 'Review & finish' },
+];
+
 const NOTE_FIELDS = [
   { key: 'chiefComplaint', label: 'Chief complaint' },
   { key: 'history', label: 'History' },
@@ -65,6 +72,7 @@ function clinicTime(value: string): string {
 
 function ConsultationDesk({ clinicSlug, csrfToken, role, onSessionLost, onDirtyChange, onPendingChange }: Props) {
   const doctorRole = role === 'doctor';
+  const [doctorSection, setDoctorSection] = useState<DoctorSection>('schedule');
   const [date, setDate] = useState(pilotDateToday);
   const [queue, setQueue] = useState<ConsultationQueueItem[]>([]);
   const [queueLoading, setQueueLoading] = useState(true);
@@ -98,6 +106,8 @@ function ConsultationDesk({ clinicSlug, csrfToken, role, onSessionLost, onDirtyC
     JSON.stringify(medications) !== JSON.stringify(medicationBaseline));
   const dirty = vitalDirty || noteDirty;
   const navigationRisk = dirty || needsReload || recoverySnapshot !== null;
+  const navigationRiskRef = useRef(navigationRisk);
+  navigationRiskRef.current = navigationRisk;
 
   useEffect(() => { onDirtyChange?.(navigationRisk); }, [navigationRisk, onDirtyChange]);
   useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
@@ -143,12 +153,19 @@ function ConsultationDesk({ clinicSlug, csrfToken, role, onSessionLost, onDirtyC
     if (pending || feePending || !safeToDiscard()) return;
     setActionError(''); setActionSuccess(''); setNeedsReload(false); setConfirmFinal(false); setRecoverySnapshot(null); setVisitError('');
     setSelected(item); setEncounter(null);
+    if (doctorRole) setDoctorSection('overview');
   }
   function chooseDate(next: string) {
     if (next === date) return;
     if (pending || feePending || !safeToDiscard()) return;
     setSelected(null); setEncounter(null); setActionError(''); setActionSuccess('');
     setNeedsReload(false); setConfirmFinal(false); setRecoverySnapshot(null); setVisitError(''); setDate(next);
+    if (doctorRole) setDoctorSection('schedule');
+  }
+  function chooseDoctorSection(next: DoctorSection) {
+    if (pending || feePending || (next !== 'schedule' && !selected)) return;
+    setConfirmFinal(false);
+    setDoctorSection(next);
   }
   function resetForms(value: Encounter) {
     const vitals = vitalFormFrom(value.vitals);
@@ -197,6 +214,40 @@ function ConsultationDesk({ clinicSlug, csrfToken, role, onSessionLost, onDirtyC
     }).finally(() => { if (!controller.signal.aborted) setReadLoading(false); });
     return () => controller.abort();
   }, [clinicSlug, csrfToken, selected?.appointmentId, selected?.clinicDate, readReload]);
+
+  useEffect(() => {
+    if (!selected || !encounter || navigationRisk || pending || feePending || readLoading) return;
+    const item = selected;
+    const currentEncounter = encounter;
+    const controller = new AbortController();
+    let fetching = false;
+    async function refreshVisit() {
+      if (fetching || controller.signal.aborted || document.visibilityState !== 'visible') return;
+      fetching = true;
+      try {
+        const latest = await readEncounter(clinicSlug, item.appointmentId, item.clinicDate, csrfToken, controller.signal);
+        if (controller.signal.aborted || navigationRiskRef.current || !matchesSelection(latest, item)) return;
+        if (latest.revision !== currentEncounter.revision) {
+          setEncounter(latest);
+          resetForms(latest);
+          setActionSuccess('This visit was updated by another staff member. The latest measurements are shown.');
+        }
+      } catch (error) {
+        if (!controller.signal.aborted) handleAccessError(error, 'visit');
+      } finally { fetching = false; }
+    }
+    const timer = window.setInterval(() => { void refreshVisit(); }, 20_000);
+    const onFocus = () => { void refreshVisit(); };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onFocus);
+    return () => {
+      controller.abort();
+      window.clearInterval(timer);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onFocus);
+    };
+  }, [clinicSlug, csrfToken, selected?.appointmentId, selected?.clinicDate, encounter?.revision,
+    navigationRisk, pending, feePending, readLoading]);
 
   function writeError(error: unknown, kind: 'vitals' | 'draft' | 'finalize') {
     if (handleAccessError(error, 'visit')) return;
@@ -289,60 +340,85 @@ function ConsultationDesk({ clinicSlug, csrfToken, role, onSessionLost, onDirtyC
   if (accessDenied) return <section className="workflow-access" role="alert"><h3>Consultation access unavailable</h3><p>This clinic, role, or doctor assignment does not allow consultation access. Contact your clinic administrator.</p></section>;
 
   return <div className="consultation">
-    <div className="workflow-intro"><div><span className="eyebrow">CLINICAL WORKSPACE</span><h3>Consultations</h3><p>{doctorRole ? 'Review your assigned visits, record care, and finalize your own draft.' : 'Record observed vitals for an existing clinic visit.'}</p></div><span className="workflow-pilot">Synthetic pilot only</span></div>
-    <p className="workflow-notice">Clinicians enter all findings and medicines. This workspace does not make clinical decisions or check medicine safety. Do not enter real patient data in staging.</p>
+    <div className="workflow-intro"><div><span className="eyebrow">CLINICAL WORKSPACE</span><h3>{doctorRole ? 'Doctor workspace' : 'Observed vitals'}</h3><p>{doctorRole ? 'Review your assigned visits, record care, and finalize your own draft.' : 'Record measured vitals for an existing clinic visit. The assigned doctor sees the same saved measurements.'}</p></div><span className="workflow-pilot">Synthetic pilot only</span></div>
+    <p className="workflow-notice">Staff enter measured vitals; only the assigned doctor enters findings and medicines. This workspace does not make clinical decisions or check medicine safety. Do not enter real patient data in staging.</p>
+    {doctorRole && <nav className="consultation-tabs" aria-label="Doctor visit sections">
+      {DOCTOR_SECTIONS.map(({ id, label }) => <button key={id} type="button"
+        aria-current={doctorSection === id ? 'page' : undefined}
+        disabled={!!pending || feePending || (id !== 'schedule' && !selected)}
+        onClick={() => chooseDoctorSection(id)}>{label}{id === 'vitals' && vitalDirty ? ' •' : ''}{(id === 'notes' || id === 'medicines') && noteDirty ? ' •' : ''}</button>)}
+    </nav>}
     <div className={`consultation-layout${doctorRole ? ' is-doctor' : ''}`}>
-      <section className="workflow-card consultation-list" aria-labelledby="consultation-queue-heading">
+      {(!doctorRole || doctorSection === 'schedule') && <section className="workflow-card consultation-list" aria-labelledby="consultation-queue-heading">
         <div className="workflow-card-head"><div><span className="workflow-step">01</span><h4 id="consultation-queue-heading">{doctorRole ? 'My daily schedule' : 'Clinic visits'}</h4></div><p>Choose a recorded appointment to open its encounter.</p></div>
         <div className="consultation-queue-controls"><label>Clinic date<input type="date" value={date} onChange={(event) => chooseDate(event.target.value)} /></label><button type="button" className="workflow-link" disabled={queueLoading} onClick={() => setQueueReload((value) => value + 1)}>Refresh list</button></div>
         {visitError && <p className="workflow-error" role="alert">{visitError}</p>}
         {queueLoading ? <p className="workflow-muted" role="status">Loading visits…</p> : queueError ? <p className="workflow-error" role="alert">{queueError}</p> : doctorRole ? <DoctorSchedule visits={queue} selected={selected} onSelect={choose} /> : queue.length === 0 ? <p className="workflow-empty" role="status">No visits found for this date.</p> : <div className="consultation-visit-list">{queue.map((item) => <button type="button" key={item.appointmentId} className={`consultation-visit${selected?.appointmentId === item.appointmentId ? ' is-selected' : ''}`} onClick={() => choose(item)} aria-pressed={selected?.appointmentId === item.appointmentId}><span className="consultation-visit-top"><strong>{item.patientName}</strong><span>{item.encounterStatus === 'finalized' ? 'Finalized' : 'Not started / draft'}</span></span><span>{item.doctorName}</span><span>{clinicTime(item.startAt)} · {item.appointmentStatus.replaceAll('_', ' ')}</span></button>)}</div>}
-      </section>
+      </section>}
 
-      <div className="consultation-main">
+      {(!doctorRole || doctorSection !== 'schedule') && <div className="consultation-main">
         {!selected ? <section className="workflow-card consultation-empty" role="status"><span className="workflow-step">02</span><h4>Select a visit</h4><p>Choose an existing appointment from the list to view or record its encounter.</p></section> : readLoading ? <section className="workflow-card consultation-empty" role="status"><h4>Loading encounter…</h4><p>Checking visit and staff access.</p></section> : readError || !encounter ? <><section className="workflow-card consultation-empty" role="alert"><h4 ref={readErrorRef} tabIndex={-1}>Encounter unavailable</h4><p>{readError || 'The encounter could not be verified.'}</p><button type="button" className="workflow-link" onClick={reloadEncounter}>Retry encounter</button></section>{recoverySnapshot && <RecoveryCopy snapshot={recoverySnapshot} doctorRole={doctorRole} canRestore={false} onRestore={restoreLocalEdits} onDiscard={() => setRecoverySnapshot(null)} />}</> : <>
-          <section className="workflow-card consultation-identity" aria-labelledby="encounter-heading"><div className="consultation-identity-top"><div><span className="eyebrow">VISIT RECORD</span><h4 id="encounter-heading">{encounter.patient.fullName}</h4><p>{encounter.patient.ageYears} years at registration · {encounter.patient.sex} · {encounter.doctor.displayName}</p></div><span className={`consultation-status${encounter.status === 'finalized' ? ' is-final' : ''}`}>{encounter.status === 'finalized' ? 'Finalized' : encounter.revision === 0 ? 'Not started' : 'Draft'}</span></div><p className="consultation-meta">Appointment: {clinicTime(selected.startAt)} · Clinic date: {selected.clinicDate} · {encounter.clinic.displayName}</p>{encounter.status === 'finalized' && encounter.finalizedAt && <p className="consultation-meta">Finalized: {clinicTime(encounter.finalizedAt)}</p>}</section>
+          <section className="workflow-card consultation-identity" aria-labelledby="encounter-heading">
+            <div className="consultation-identity-top"><div><span className="eyebrow">VISIT RECORD</span><h4 id="encounter-heading">{encounter.patient.fullName}</h4><p>{encounter.patient.ageYears} years at registration · {encounter.patient.sex} · {encounter.doctor.displayName}</p></div><span className={`consultation-status${encounter.status === 'finalized' ? ' is-final' : ''}`}>{encounter.status === 'finalized' ? 'Finalized' : encounter.revision === 0 ? 'Not started' : 'Draft'}</span></div>
+            <p className="consultation-meta">Appointment: {clinicTime(selected.startAt)} · Clinic date: {selected.clinicDate} · {encounter.clinic.displayName}</p>
+            {encounter.status === 'finalized' && encounter.finalizedAt && <p className="consultation-meta">Finalized: {clinicTime(encounter.finalizedAt)}</p>}
+            <button type="button" className="workflow-link consultation-refresh" onClick={reloadEncounter} disabled={!!pending || feePending}>Refresh visit</button>
+          </section>
 
-          {doctorRole && <ConsultationFee key={`${clinicSlug}:${selected.appointmentId}:${selected.clinicDate}`}
+          {doctorRole && doctorSection === 'overview' && <ConsultationFee key={`${clinicSlug}:${selected.appointmentId}:${selected.clinicDate}`}
             clinicSlug={clinicSlug} appointmentId={selected.appointmentId} clinicDate={selected.clinicDate}
             patientName={encounter.patient.fullName} appointmentStatus={selected.appointmentStatus}
             encounterStatus={encounter.status} csrfToken={csrfToken}
             onSessionLost={onSessionLost} onBusyChange={setFeePending} />}
 
-          {doctorRole && <PatientHistory key={`${clinicSlug}:${selected.appointmentId}:${selected.clinicDate}:${encounter.patient.id}`}
+          {doctorRole && doctorSection === 'overview' && <PatientHistory key={`${clinicSlug}:${selected.appointmentId}:${selected.clinicDate}:${encounter.patient.id}`}
             clinicSlug={clinicSlug} appointmentId={selected.appointmentId} clinicDate={selected.clinicDate}
             patientId={encounter.patient.id} currentVisitAt={selected.startAt} csrfToken={csrfToken}
             onSessionLost={onSessionLost} />}
+
+          {doctorRole && doctorSection === 'overview' && <section className="workflow-card consultation-section" aria-labelledby="overview-vitals-heading">
+            <div className="workflow-card-head"><div><span className="workflow-step">02</span><h4 id="overview-vitals-heading">Latest observed vitals</h4></div><p>Measurements saved by reception, nursing, or the doctor appear in this visit record.</p></div>
+            {encounter.vitals ? <><p className="consultation-recorded">Recorded by {encounter.vitals.recordedByDisplayName} at {clinicTime(encounter.vitals.recordedAt)} · observed {clinicTime(encounter.vitals.observedAt)}</p><div className="consultation-vital-grid">{VITAL_FIELDS.filter(({ key }) => encounter.vitals?.[key] !== undefined).map(({ key, label, unit }) => <div className="consultation-vital-read" key={key}><span>{label}</span><strong>{encounter.vitals?.[key]} {unit}</strong></div>)}</div></> : <p className="workflow-empty">No vitals recorded for this visit yet.</p>}
+            <button type="button" className="workflow-link consultation-refresh" onClick={() => chooseDoctorSection('vitals')}>Open vitals</button>
+          </section>}
 
           {actionError && <div className="workflow-error consultation-feedback" role="alert"><p>{actionError}</p>{needsReload && <button type="button" className="workflow-link" onClick={reloadEncounter}>Reload server record</button>}</div>}
           {actionSuccess && <p className="workflow-success consultation-feedback" role="status">{actionSuccess}</p>}
           {recoverySnapshot && <RecoveryCopy snapshot={recoverySnapshot} doctorRole={doctorRole} canRestore={encounter.status === 'draft'} onRestore={restoreLocalEdits} onDiscard={() => setRecoverySnapshot(null)} />}
 
-          <section className="workflow-card consultation-section" aria-labelledby="vitals-heading"><div className="workflow-card-head"><div><span className="workflow-step">02</span><h4 id="vitals-heading">Observed vitals</h4></div><p>Enter measured values with units and the time they were observed.</p></div>
+          {(!doctorRole || doctorSection === 'vitals') && <section className="workflow-card consultation-section" aria-labelledby="vitals-heading"><div className="workflow-card-head"><div><span className="workflow-step">02</span><h4 id="vitals-heading">Observed vitals</h4></div><p>Enter measured values with units and the time they were observed.</p></div>
             {encounter.vitals && <p className="consultation-recorded">Last recorded by {encounter.vitals.recordedByDisplayName} at {clinicTime(encounter.vitals.recordedAt)} · observed {clinicTime(encounter.vitals.observedAt)}</p>}
             {encounter.status === 'finalized' ? <div className="consultation-vital-grid">{encounter.vitals ? VITAL_FIELDS.filter(({ key }) => encounter.vitals?.[key] !== undefined).map(({ key, label, unit }) => <div className="consultation-vital-read" key={key}><span>{label}</span><strong>{encounter.vitals?.[key]} {unit}</strong></div>) : <p className="workflow-empty">No vitals recorded.</p>}</div> : <form onSubmit={handleVitals} aria-busy={pending === 'vitals'}><div className="consultation-vital-grid"><label className="consultation-observed">Observed at · Asia/Kolkata<input type="datetime-local" value={vitalForm.observedAt} onChange={(event) => setVitalForm({ ...vitalForm, observedAt: event.target.value })} required disabled={!!pending || needsReload} /></label>{VITAL_FIELDS.map(({ key, label, unit }) => <label key={key}>{label} <span className="workflow-optional">{unit}</span><input type="number" min={key === 'spo2Percent' || key === 'temperatureC' || key === 'weightKg' || key === 'heightCm' ? '0' : '1'} max={key === 'systolicBpMmHg' ? '400' : key === 'diastolicBpMmHg' ? '300' : key === 'pulseBpm' ? '350' : key === 'spo2Percent' ? '100' : key === 'temperatureC' ? '50' : key === 'weightKg' ? '500' : '300'} step="any" inputMode="decimal" value={vitalForm[key]} onChange={(event) => setVitalForm({ ...vitalForm, [key]: event.target.value })} disabled={!!pending || needsReload} /></label>)}</div><button className="workflow-action consultation-save" type="submit" disabled={!!pending || needsReload || !vitalDirty}>Save measured vitals</button></form>}
-          </section>
+          </section>}
 
-          {doctorRole && encounter.note && encounter.medications && <section className="workflow-card consultation-section" aria-labelledby="note-heading"><div className="workflow-card-head"><div><span className="workflow-step">03</span><h4 id="note-heading">Doctor consultation</h4></div><p>Clinical text and prescription entries are written by the assigned doctor.</p></div>
-            {encounter.status === 'finalized' ? <div className="consultation-readonly">{NOTE_FIELDS.map(({ key, label }) => <div key={key}><strong>{label}</strong><p>{encounter.note?.[key] || 'Not recorded'}</p></div>)}<h5>Prescription entries</h5>{encounter.medications.length === 0 ? <p>No medicines recorded.</p> : encounter.medications.map((medicine, index) => <div className="consultation-med-read" key={index}><strong>{index + 1}. {medicine.name} {medicine.strength}</strong><p>{medicine.dose} · {medicine.route} · {medicationTimingText(medicine)} · {medicine.duration}</p><p>{medicine.instructions}</p></div>)}</div> : <form onSubmit={handleDraft} aria-busy={pending === 'draft'}>
+          {doctorRole && doctorSection === 'notes' && encounter.note && encounter.medications && <section className="workflow-card consultation-section" aria-labelledby="note-heading">
+            <div className="workflow-card-head"><div><span className="workflow-step">03</span><h4 id="note-heading">Doctor consultation</h4></div><p>Clinical findings are entered by the assigned doctor.</p></div>
+            {encounter.status === 'finalized' ? <div className="consultation-readonly">{NOTE_FIELDS.map(({ key, label }) => <div key={key}><strong>{label}</strong><p>{encounter.note?.[key] || 'Not recorded'}</p></div>)}</div> : <form onSubmit={handleDraft} aria-busy={pending === 'draft'}>
               <div className="consultation-note-fields">{NOTE_FIELDS.map(({ key, label }) => <label key={key}>{label}{(key === 'assessment' || key === 'plan') && <span className="workflow-optional"> required before finalizing</span>}<textarea rows={key === 'history' || key === 'exam' ? 3 : 2} maxLength={3000} value={note[key]} onChange={(event) => setNote({ ...note, [key]: event.target.value })} disabled={!!pending || needsReload} /></label>)}</div>
+              <button className="workflow-action consultation-save" type="submit" disabled={!!pending || needsReload || !noteDirty}>Save consultation draft</button>
+            </form>}
+          </section>}
+
+          {doctorRole && doctorSection === 'medicines' && encounter.note && encounter.medications && <section className="workflow-card consultation-section" aria-labelledby="medicines-heading">
+            <div className="workflow-card-head"><div><span className="workflow-step">04</span><h4 id="medicines-heading">Prescription</h4></div><p>Only the assigned doctor enters medicines. Save them with the consultation draft.</p></div>
+            {encounter.status === 'finalized' ? <div className="consultation-readonly">{encounter.medications.length === 0 ? <p>No medicines recorded.</p> : encounter.medications.map((medicine, index) => <div className="consultation-med-read" key={index}><strong>{index + 1}. {medicine.name} {medicine.strength}</strong><p>{medicine.dose} · {medicine.route} · {medicationTimingText(medicine)} · {medicine.duration}</p><p>{medicine.instructions}</p></div>)}</div> : <form onSubmit={handleDraft} aria-busy={pending === 'draft'}>
               <div className="consultation-meds-head"><h5>Doctor-entered prescription items</h5><button type="button" className="workflow-link" disabled={!!pending || needsReload || medications.length >= 20} onClick={() => setMedications([...medications, emptyMedication()])}>Add medicine</button></div>
               {medications.length === 0 && <p className="workflow-empty">No medicine entries. A consultation may be finalized without a prescription.</p>}
               {medications.map((medicine, index) => <MedicineEntry key={index} clinicSlug={clinicSlug} csrfToken={csrfToken}
                 index={index} medicine={medicine} disabled={!!pending || needsReload} onSessionLost={onSessionLost}
                 onChange={(value) => setMedications((current) => current.map((item, itemIndex) => itemIndex === index ? value : item))}
                 onRemove={() => setMedications((current) => current.filter((_, itemIndex) => itemIndex !== index))} />)}
-              <button className="workflow-action consultation-save" type="submit" disabled={!!pending || needsReload || !noteDirty}>Save consultation draft</button>
+              <button className="workflow-action consultation-save" type="submit" disabled={!!pending || needsReload || !noteDirty}>Save prescription draft</button>
             </form>}
           </section>}
 
-          {doctorRole && encounter.status === 'draft' && encounter.note && <section className="workflow-card consultation-section consultation-finalize" aria-labelledby="finalize-heading"><div className="workflow-card-head"><div><span className="workflow-step">04</span><h4 id="finalize-heading">Finalize encounter</h4></div><p>Finalization is read-only afterward in this pilot. Review the saved draft first.</p></div>
+          {doctorRole && doctorSection === 'review' && encounter.status === 'draft' && encounter.note && <section className="workflow-card consultation-section consultation-finalize" aria-labelledby="finalize-heading"><div className="workflow-card-head"><div><span className="workflow-step">05</span><h4 id="finalize-heading">Finalize encounter</h4></div><p>Review saved consultation and prescription entries before finishing. Finalization is read-only afterward.</p></div>
             {encounter.revision === 0 ? <p className="workflow-hint">Save a draft before finalizing.</p> : dirty ? <p className="workflow-hint">Save or discard unsaved changes before finalizing.</p> : !completeForFinalize(note, medications) ? <p className="workflow-hint">Assessment and plan are required. Each medicine needs a name, dose, route, duration, instructions, and either selected times or a custom frequency.</p> : !confirmFinal ? <button type="button" className="workflow-link consultation-finalize-start" onClick={() => setConfirmFinal(true)} disabled={!!pending || needsReload}>Review finalization</button> : <div className="consultation-confirm" role="group" aria-label="Confirm encounter finalization"><p>Finalize this saved draft for {encounter.patient.fullName}? You cannot edit it in this pilot. The server will confirm the final status.</p><div><button type="button" className="workflow-link" onClick={() => setConfirmFinal(false)}>Cancel</button><button ref={confirmButtonRef} type="button" className="workflow-action" onClick={handleFinalize} disabled={!!pending || needsReload}>{pending === 'finalize' ? 'Finalizing…' : 'Confirm finalization'}</button></div></div>}
           </section>}
 
-          {printable && <section className="workflow-card consultation-section consultation-print-action"><div><h4>Finalized prescription</h4><p>Print the server-confirmed prescription for this synthetic pilot.</p></div><button type="button" className="workflow-action" onClick={() => window.print()}>Print prescription</button></section>}
+          {doctorSection === 'review' && printable && <section className="workflow-card consultation-section consultation-print-action"><div><h4>Finalized prescription</h4><p>Print the server-confirmed prescription for this synthetic pilot.</p></div><button type="button" className="workflow-action" onClick={() => window.print()}>Print prescription</button></section>}
         </>}
-      </div>
+      </div>}
     </div>
 
     {printable && <PrescriptionPrint prescription={printable} />}
@@ -350,6 +426,6 @@ function ConsultationDesk({ clinicSlug, csrfToken, role, onSessionLost, onDirtyC
 }
 
 export default function Consultation(props: Props) {
-  if (props.role !== 'nurse' && props.role !== 'doctor') return <section className="workflow-access" role="status"><h3>No consultation access</h3><p>Only authorized nurses and assigned doctors can open this pilot consultation module.</p></section>;
+  if (!['nurse', 'doctor', 'receptionist', 'clinic_admin'].includes(props.role)) return <section className="workflow-access" role="status"><h3>No consultation access</h3><p>Only authorized vitals staff and assigned doctors can open this pilot module.</p></section>;
   return <ConsultationDesk {...props} />;
 }
