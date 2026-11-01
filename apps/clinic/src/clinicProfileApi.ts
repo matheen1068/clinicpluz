@@ -130,14 +130,36 @@ export async function uploadClinicLogo(slug: string, file: File, expectedRevisio
   if (!revision(expectedRevision) || !['image/png', 'image/jpeg'].includes(file.type) || file.size < 1 || file.size > 3_000_000) {
     throw new ClinicProfileApiError(null, 'Choose a PNG or JPEG logo up to 3 MB.');
   }
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  let binary = '';
-  for (let offset = 0; offset < bytes.length; offset += 8192) {
-    binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
-  }
-  return parseAccess(await request(endpoint(slug, '/logo'), {
+  const prepared = await request(`${endpoint(slug, '/logo')}/prepare`, {
     method: 'POST', headers: csrfHeaders(csrfToken),
-    body: JSON.stringify({ expectedRevision, contentType: file.type, dataBase64: btoa(binary) }),
+    body: JSON.stringify({ expectedRevision, contentType: file.type }),
+  });
+  if (!record(prepared) || typeof prepared.uploadId !== 'string' ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(prepared.uploadId) ||
+      typeof prepared.url !== 'string' || !record(prepared.fields)) {
+    throw new ClinicProfileApiError(null, 'Invalid logo upload response');
+  }
+  const url = new URL(prepared.url);
+  if (url.protocol !== 'https:' || !/^[a-z0-9-]+\.s3\.ap-south-1\.amazonaws\.com$/.test(url.hostname) ||
+      url.pathname !== '/' || url.search || url.hash ||
+      prepared.fields.key !== `staged/${slug}/${prepared.uploadId}.${file.type === 'image/png' ? 'png' : 'jpg'}` ||
+      prepared.fields['Content-Type'] !== file.type ||
+      Object.keys(prepared.fields).length > 20 ||
+      Object.values(prepared.fields).some((value) => typeof value !== 'string' || value.length > 4096)) {
+    throw new ClinicProfileApiError(null, 'Invalid logo upload response');
+  }
+  const form = new FormData();
+  for (const [key, value] of Object.entries(prepared.fields)) form.append(key, value as string);
+  form.append('file', file);
+  let stored: Response;
+  try {
+    stored = await fetch(url.toString(), { method: 'POST', body: form, credentials: 'omit',
+      mode: 'cors', redirect: 'error', signal: AbortSignal.timeout(60_000) });
+  } catch { throw new ClinicProfileApiError(null, 'Logo upload to storage failed. Please try again.'); }
+  if (!stored.ok) throw new ClinicProfileApiError(null, 'Logo upload to storage failed. Please try again.');
+  return parseAccess(await request(`${endpoint(slug, '/logo')}/complete`, {
+    method: 'POST', headers: csrfHeaders(csrfToken),
+    body: JSON.stringify({ expectedRevision, contentType: file.type, uploadId: prepared.uploadId }),
   }), slug);
 }
 export async function removeClinicLogo(slug: string, expectedRevision: number, csrfToken: string): Promise<ProfileAccess> {
