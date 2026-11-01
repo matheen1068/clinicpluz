@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { registerHooks } from 'node:module';
 
 const dynamoStub = `
@@ -49,6 +50,14 @@ const { S3ClinicLogoStore } = await import('../src/profile-aws.ts');
 const S = (value) => ({ S: value });
 const N = (value) => ({ N: String(value) });
 const at = '2026-11-02T10:00:00.000Z';
+
+test('SAM exposes both small logo upload routes and a separate expiring private staging bucket', async () => {
+  const template = await readFile(new URL('../template.yaml', import.meta.url), 'utf8');
+  assert.match(template, /Path: '\/api\/workflow\/clinics\/\{slug\}\/profile\/logo\/prepare'/);
+  assert.match(template, /Path: '\/api\/workflow\/clinics\/\{slug\}\/profile\/logo\/complete'/);
+  assert.match(template, /PendingClinicLogoBucket:[\s\S]*?BlockPublicPolicy: true/);
+  assert.match(template, /Id: ExpireUnfinishedLogoUploads[\s\S]*?ExpirationInDays: 1/);
+});
 
 test('profile access reads branch-specific control setting strongly consistently and rejects invalid roles', async () => {
   let item = { pk: S('CLINIC#goodwell'), sk: S('PROFILE_ACCESS'),
