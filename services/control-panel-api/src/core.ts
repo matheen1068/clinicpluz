@@ -19,6 +19,7 @@ export interface StaffRecord {
   displayName: string; role: Role; active: boolean; version: number;
 }
 export interface EntitlementsRecord { clinicSlug: string; modules: Entitlements; version: number }
+export interface ProfileAccessRecord { clinicSlug: string; editRoles: Role[]; version: number }
 export interface AuditEvent {
   id: string; clinicSlug: string; actorSub: string; action: string; target: string;
   at: string; changes: Record<string, string | boolean | number>;
@@ -39,6 +40,8 @@ export interface ControlRepository {
   getStaff(slug: string, username: string): Promise<StaffRecord | null>;
   listStaff(slug: string, after: string | null): Promise<Page<StaffRecord>>;
   getEntitlements(slug: string): Promise<EntitlementsRecord | null>;
+  getProfileAccess(slug: string): Promise<ProfileAccessRecord | null>;
+  replaceProfileAccess(record: ProfileAccessRecord, expectedVersion: number, audit: AuditEvent): Promise<boolean>;
   listRecentChanges(slug: string, from: string, to: string): Promise<DiagnosticChangePage>;
   createStaff(staff: StaffRecord, audit: AuditEvent): Promise<boolean>;
   replaceStaff(staff: StaffRecord, expectedVersion: number, requireInactiveClinic: boolean, audit: AuditEvent): Promise<boolean>;
@@ -321,7 +324,7 @@ export function createControlApp(repo: ControlRepository, identity: StaffIdentit
           });
         }
 
-        const route = /^\/api\/control\/clinics\/([a-z0-9-]+)(?:\/(staff(?:\/([a-z0-9._@+-]+))?|modules|state))?$/.exec(input.path);
+        const route = /^\/api\/control\/clinics\/([a-z0-9-]+)(?:\/(staff(?:\/([a-z0-9._@+-]+))?|modules|state|profile-access))?$/.exec(input.path);
         if (!route || !validSlug(route[1])) return respond(404, { error: 'Not found' });
         const slug = route[1];
         const endpoint = route[2] ?? '';
@@ -333,6 +336,33 @@ export function createControlApp(repo: ControlRepository, identity: StaffIdentit
           const modules = await repo.getEntitlements(slug);
           if (!modules) throw new Error('Missing entitlements');
           return respond(200, { clinic, entitlements: modules });
+        }
+        if (input.method === 'GET' && endpoint === 'profile-access') {
+          const saved = await repo.getProfileAccess(slug);
+          return respond(200, { profileAccess: saved ?? {
+            clinicSlug: slug, editRoles: ['clinic_admin', 'receptionist', 'doctor'], version: 0,
+          } });
+        }
+        if (input.method === 'PUT' && endpoint === 'profile-access') {
+          const request = body(input);
+          if (!request || !hasOnly(request, ['expectedVersion', 'editRoles']) ||
+              !Number.isSafeInteger(request.expectedVersion) || (request.expectedVersion as number) < 0 ||
+              !Array.isArray(request.editRoles) || request.editRoles.length > ROLES.length ||
+              request.editRoles.some((role: unknown) => !isRole(role)) ||
+              new Set(request.editRoles).size !== request.editRoles.length) {
+            return respond(400, { error: 'Invalid clinic profile access' });
+          }
+          const previous = await repo.getProfileAccess(slug);
+          if ((previous?.version ?? 0) !== request.expectedVersion) {
+            return respond(409, { error: 'Clinic profile access changed; refresh and retry' });
+          }
+          const updated: ProfileAccessRecord = { clinicSlug: slug,
+            editRoles: request.editRoles as Role[], version: (request.expectedVersion as number) + 1 };
+          const applied = await repo.replaceProfileAccess(updated, request.expectedVersion as number,
+            audit(actor, slug, 'profile_access.replaced', slug,
+              { version: updated.version, editRoles: updated.editRoles.join(',') }));
+          return applied ? respond(200, { profileAccess: updated })
+            : respond(409, { error: 'Clinic profile access changed; refresh and retry' });
         }
         if (input.method === 'GET' && endpoint === 'staff') {
           const params = query(input, ['cursor']);
@@ -422,3 +452,4 @@ export function createControlApp(repo: ControlRepository, identity: StaffIdentit
     },
   };
 }
+

@@ -20,6 +20,23 @@ test('API cannot call without an in-memory operator access token', async () => {
   } finally { restore(); }
 });
 
+test('profile access reads and writes only role names and expected version', async () => {
+  const calls = [];
+  const restore = mockFetch(async (path, init) => {
+    calls.push({ path, init });
+    return Response.json({ profileAccess: { clinicSlug: 'goodwell-central',
+      editRoles: ['clinic_admin', 'receptionist', 'doctor'], version: init.method === 'PUT' ? 1 : 0 } });
+  });
+  try {
+    const api = new ControlApi(() => 'operator-access');
+    assert.equal((await api.profileAccess('goodwell-central')).version, 0);
+    assert.equal((await api.setProfileAccess('goodwell-central', 0, ['clinic_admin', 'receptionist', 'doctor'])).version, 1);
+    assert.equal(calls[0].path, '/api/control/clinics/goodwell-central/profile-access');
+    assert.deepEqual(JSON.parse(calls[1].init.body), { expectedVersion: 0, editRoles: ['clinic_admin', 'receptionist', 'doctor'] });
+    assert.equal(calls[1].init.credentials, 'omit');
+  } finally { restore(); }
+});
+
 test('customer and branch reads send operator bearer token without clinic cookies', async () => {
   const calls = [];
   const restore = mockFetch(async (path, init) => {
@@ -172,3 +189,4 @@ test('OAuth configuration only accepts a secure hosted domain and same-origin ca
   assert.equal(configFromEnv({ ...valid, VITE_OPERATOR_CLIENT_ID: '' }, location), null);
   assert.equal(base64url(new Uint8Array([251, 255])), '-_8');
 });
+

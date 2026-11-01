@@ -6,6 +6,7 @@ import {
   MODULES, ROLES, type AuditEvent, type ClinicRecord, type ControlRepository,
   type BranchRecord, type CustomerRecord, type Entitlements, type EntitlementsRecord, type Page,
   type Role, type StaffIdentity, type StaffRecord, type DiagnosticChangePage,
+  type ProfileAccessRecord,
 } from './core.js';
 
 type Item = Record<string, AttributeValue>;
@@ -16,6 +17,7 @@ const nameKey = (value: string): string => value.normalize('NFKC').trim().replac
 const DIAGNOSTIC_ACTIONS = new Set([
   'branch.created', 'branch.legacy_adopted', 'clinic.state_changed',
   'staff.created', 'staff.updated', 'modules.replaced',
+  'profile_access.replaced',
 ]);
 function string(item: Item, field: string): string {
   const value = (item[field] as { S?: string } | undefined)?.S;
@@ -278,6 +280,37 @@ export class DynamoControlRepository implements ControlRepository {
     if (string(item, 'clinicSlug') !== slug) throw new Error('Entitlements key mismatch');
     return { clinicSlug: slug, modules: parseModules(item), version: recordVersion(item) };
   }
+  async getProfileAccess(slug: string): Promise<ProfileAccessRecord | null> {
+    const item = await this.get(`CLINIC#${slug}`, 'PROFILE_ACCESS');
+    if (!item) return null;
+    const roles = (item.editRoles as { L?: AttributeValue[] } | undefined)?.L;
+    if (!Array.isArray(roles) || roles.length > ROLES.length ||
+        roles.some((role) => !role.S || !ROLES.includes(role.S as Role)) ||
+        new Set(roles.map((role) => role.S)).size !== roles.length) {
+      throw new Error('Invalid profile access roles');
+    }
+    return { clinicSlug: slug, editRoles: roles.map((role) => role.S as Role), version: integer(item, 'version') };
+  }
+  async replaceProfileAccess(record: ProfileAccessRecord, expectedVersion: number, audit: AuditEvent): Promise<boolean> {
+    const key = { pk: s(`CLINIC#${record.clinicSlug}`), sk: s('PROFILE_ACCESS') };
+    const write = expectedVersion === 0
+      ? { Put: { TableName: this.table, Item: { ...key,
+          editRoles: { L: record.editRoles.map(s) }, version: n(record.version) },
+          ConditionExpression: 'attribute_not_exists(pk)' } }
+      : { Update: { TableName: this.table, Key: key,
+          UpdateExpression: 'SET editRoles = :roles, #version = :next',
+          ConditionExpression: '#version = :expected',
+          ExpressionAttributeNames: { '#version': 'version' },
+          ExpressionAttributeValues: { ':roles': { L: record.editRoles.map(s) },
+            ':next': n(record.version), ':expected': n(expectedVersion) } } };
+    return this.transact([
+      { ConditionCheck: { TableName: this.table,
+        Key: { pk: s(`CLINIC#${record.clinicSlug}`), sk: s('META') },
+        ConditionExpression: 'attribute_exists(pk)' } },
+      write,
+      { Put: { TableName: this.table, Item: auditItem(audit), ConditionExpression: 'attribute_not_exists(pk)' } },
+    ]);
+  }
   async listRecentChanges(slug: string, from: string, to: string): Promise<DiagnosticChangePage> {
     const pk = `AUDIT#${slug}`;
     const result = await this.client.send(new QueryCommand({
@@ -400,3 +433,4 @@ export class CognitoStaffLookup implements StaffIdentity {
     }
   }
 }
+

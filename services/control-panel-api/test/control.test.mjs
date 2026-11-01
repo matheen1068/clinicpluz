@@ -13,6 +13,7 @@ class MemoryRepository {
   clinics = new Map();
   staff = new Map();
   entitlements = new Map();
+  profileAccess = new Map();
   audits = [];
   key(slug, username) { return `${slug}\0${username}`; }
   page(items, after, key) {
@@ -65,6 +66,11 @@ class MemoryRepository {
       (item) => `STAFF#${item.username}`);
   }
   async getEntitlements(slug) { return structuredClone(this.entitlements.get(slug) ?? null); }
+  async getProfileAccess(slug) { return structuredClone(this.profileAccess.get(slug) ?? null); }
+  async replaceProfileAccess(record, expectedVersion, audit) {
+    if (!this.clinics.has(record.clinicSlug) || (this.profileAccess.get(record.clinicSlug)?.version ?? 0) !== expectedVersion) return false;
+    this.profileAccess.set(record.clinicSlug, structuredClone(record)); this.audits.push(audit); return true;
+  }
   async listRecentChanges(slug, from, to) {
     const changes = this.audits.filter((event) => event.clinicSlug === slug && event.at >= from && event.at <= to)
       .sort((a, b) => b.at.localeCompare(a.at) || b.id.localeCompare(a.id));
@@ -129,6 +135,26 @@ async function createCustomerAndBranch(call, slug = 'goodwell', branchName = 'Ma
   assert.equal(created.status, 201);
   return { customer: customer.body.customer, branch: created.body.branch };
 }
+
+test('operator controls clinic identity edit roles with version checks and tenant scope', async () => {
+  const { repo, call } = setup();
+  await createCustomerAndBranch(call);
+  const path = '/api/control/clinics/goodwell/profile-access';
+  const initial = await call('GET', path);
+  assert.equal(initial.status, 200);
+  assert.deepEqual(initial.body.profileAccess, { clinicSlug: 'goodwell',
+    editRoles: ['clinic_admin', 'receptionist', 'doctor'], version: 0 });
+  assert.equal((await call('PUT', path, { expectedVersion: 0, editRoles: ['doctor', 'doctor'] })).status, 400);
+  assert.equal((await call('PUT', path, { expectedVersion: 0, editRoles: ['unknown'] })).status, 400);
+  assert.equal((await call('PUT', path, { expectedVersion: 0, editRoles: ['pharmacist'] }, null)).status, 403);
+  const saved = await call('PUT', path, { expectedVersion: 0, editRoles: ['clinic_admin', 'receptionist', 'doctor', 'nurse'] });
+  assert.equal(saved.status, 200);
+  assert.equal(saved.body.profileAccess.version, 1);
+  assert.deepEqual((await call('GET', path)).body.profileAccess.editRoles, ['clinic_admin', 'receptionist', 'doctor', 'nurse']);
+  assert.equal((await call('PUT', path, { expectedVersion: 0, editRoles: [] })).status, 409);
+  assert.equal((await call('GET', '/api/control/clinics/other/profile-access')).status, 404);
+  assert.equal(repo.audits.at(-1).action, 'profile_access.replaced');
+});
 
 test('operator identity must come from verified JWT authorizer context, never headers', async () => {
   const { repo, call } = setup();
@@ -476,3 +502,4 @@ test('Control Panel memberships feed Green login and staff suspension revokes an
   })).status, 200);
   assert.equal((await session()).statusCode, 401);
 });
+
