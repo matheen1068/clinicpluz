@@ -68,8 +68,22 @@ test('logo upload and removal use bounded same-origin routes and revision checks
     assert.equal(uploaded.profile.logo.url, logoUrl);
     assert.equal((await removeClinicLogo('goodwell', 5, 'csrf-session')).profile.logo, null);
     assert.equal(calls, 2);
-    await assert.rejects(uploadClinicLogo('goodwell', new File([new Uint8Array(128 * 1024 + 1)], 'large.png', { type: 'image/png' }), 6, 'csrf-session'), ClinicProfileApiError);
+    await assert.rejects(uploadClinicLogo('goodwell', new File([new Uint8Array(3_000_001)], 'large.png', { type: 'image/png' }), 6, 'csrf-session'), ClinicProfileApiError);
     assert.equal(calls, 2);
+  } finally { restore(); }
+});
+
+test('logo upload accepts a file larger than the old 128 KiB limit', async () => {
+  let sent = false;
+  const restore = mockFetch(async (_path, init) => {
+    const body = JSON.parse(init.body);
+    assert.equal(body.dataBase64.length, 4 * Math.ceil((128 * 1024 + 1) / 3));
+    sent = true;
+    return Response.json({ profile: { ...profile, revision: 1 }, canEdit: true });
+  });
+  try {
+    await uploadClinicLogo('goodwell', new File([new Uint8Array(128 * 1024 + 1)], 'logo.png', { type: 'image/png' }), 0, 'csrf-session');
+    assert.equal(sent, true);
   } finally { restore(); }
 });
 

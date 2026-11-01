@@ -71,10 +71,10 @@ function jpegDimensions(bytes: Uint8Array): { width: number; height: number } | 
 
 export async function parseLogoUpload(contentType: unknown, dataBase64: unknown): Promise<LogoUpload | null> {
   if (contentType !== 'image/png' && contentType !== 'image/jpeg' ||
-      typeof dataBase64 !== 'string' || dataBase64.length < 32 || dataBase64.length > 175_000 ||
+      typeof dataBase64 !== 'string' || dataBase64.length < 32 || dataBase64.length > 4_000_000 ||
       !/^[A-Za-z0-9+/]+={0,2}$/.test(dataBase64)) return null;
   const bytes = Buffer.from(dataBase64, 'base64');
-  if (bytes.length < 32 || bytes.length > 128 * 1024 || bytes.toString('base64') !== dataBase64) return null;
+  if (bytes.length < 32 || bytes.length > 3_000_000 || bytes.toString('base64') !== dataBase64) return null;
   let dimensions: { width: number; height: number } | null = null;
   if (contentType === 'image/png') {
     const signature = Buffer.from('89504e470d0a1a0a', 'hex');

@@ -432,7 +432,7 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
             return saved ? result(200, shown(next)) : result(409, { error: 'Clinic profile changed; reload' });
           }
           if (input.method === 'POST' && endpoint === 'profile/logo') {
-            const request = body(input, 180_000);
+            const request = body(input, 4_100_000);
             if (!request || !hasOnly(request, ['expectedRevision', 'contentType', 'dataBase64']) ||
                 !profileRevision(request.expectedRevision)) return result(400, { error: 'Invalid clinic logo' });
             if (current.revision !== request.expectedRevision) return result(409, { error: 'Clinic profile changed; reload' });

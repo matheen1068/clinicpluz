@@ -22,7 +22,7 @@ export class S3ClinicLogoStore {
     }
     const object = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: logo.key }));
     if (!object.Body || object.ContentType !== logo.contentType ||
-        !object.ContentLength || object.ContentLength > 128 * 1024 ||
+        !object.ContentLength || object.ContentLength > 3_000_000 ||
         object.Metadata?.sha256 !== logo.sha256) throw new Error('Invalid clinic logo object');
     const bytes = await object.Body.transformToByteArray();
     if (bytes.length !== object.ContentLength ||

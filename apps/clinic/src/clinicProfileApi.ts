@@ -127,8 +127,8 @@ export async function saveClinicProfile(slug: string, draft: ProfileDraft, expec
   }), slug);
 }
 export async function uploadClinicLogo(slug: string, file: File, expectedRevision: number, csrfToken: string): Promise<ProfileAccess> {
-  if (!revision(expectedRevision) || !['image/png', 'image/jpeg'].includes(file.type) || file.size < 1 || file.size > 128 * 1024) {
-    throw new ClinicProfileApiError(null, 'Choose a PNG or JPEG logo up to 128 KiB.');
+  if (!revision(expectedRevision) || !['image/png', 'image/jpeg'].includes(file.type) || file.size < 1 || file.size > 3_000_000) {
+    throw new ClinicProfileApiError(null, 'Choose a PNG or JPEG logo up to 3 MB.');
   }
   const bytes = new Uint8Array(await file.arrayBuffer());
   let binary = '';

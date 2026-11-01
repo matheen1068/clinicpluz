@@ -14,7 +14,7 @@ function message(error: unknown): string {
     if (error.status === 409) return 'Clinic details changed elsewhere. Refresh to review the latest version before saving.';
     if (error.status === 400 || error.status === 422) return 'The details or logo could not be accepted. Check the fields and try again.';
     if (error.status === 403) return 'Your current clinic access does not allow this change.';
-    if (error.status === 413) return 'This logo is too large. Choose a PNG or JPEG under 128 KiB.';
+    if (error.status === 413) return 'This logo is too large. Choose a PNG or JPEG up to 3 MB.';
     if (error.message.startsWith('Choose a PNG')) return error.message;
   }
   return 'Clinic details could not be verified. Please try again.';
@@ -122,7 +122,7 @@ export default function ClinicProfile({ clinicSlug, csrfToken, onSessionLost, on
               {access.canEdit ? <div className="clinic-profile-actions"><span>{textDirty ? 'You have unsaved text changes.' : 'Text details match the server record.'}</span><button className="workflow-action" type="submit" disabled={pending || !textDirty}>{pending ? 'Saving…' : 'Save details'}</button></div> : <p className="workflow-hint">Your account can view these details but cannot edit them.</p>}
             </form>
           </section>
-          <section className="workflow-card" aria-labelledby="profile-logo-title"><div className="workflow-card-head"><div><span className="workflow-step">02</span><h4 id="profile-logo-title">Clinic logo</h4></div><p>PNG or JPEG · up to 128 KiB · maximum 2048 × 2048 pixels.</p></div>
+          <section className="workflow-card" aria-labelledby="profile-logo-title"><div className="workflow-card-head"><div><span className="workflow-step">02</span><h4 id="profile-logo-title">Clinic logo</h4></div><p>PNG or JPEG · up to 3 MB · maximum 2048 × 2048 pixels.</p></div>
             <div className="clinic-profile-logo-row"><div className="clinic-profile-logo-frame">{profile?.logo && !logoBroken ? <img src={profile.logo.url} key={profile.revision} alt={`${profile.displayName} logo`} onError={() => setLogoBroken(true)} /> : <span aria-hidden="true">{profile?.displayName.slice(0, 1).toUpperCase() || 'C'}</span>}</div><div><strong>{profile?.logo && !logoBroken ? 'Current saved logo' : profile?.logo ? 'Logo could not be displayed' : 'No logo saved'}</strong><p>Prescription printing uses the currently saved logo. Changes here do not alter the medicine order.</p></div></div>
             {access.canEdit && <div className="clinic-profile-logo-actions"><label htmlFor="profile-logo-file">Choose a logo</label><input ref={fileInput} id="profile-logo-file" type="file" accept="image/png,image/jpeg" onChange={(event) => { setLogoFile(event.target.files?.[0] ?? null); setError(''); }} disabled={pending} /><div><button className="workflow-link" type="button" onClick={() => void changeLogo(false)} disabled={pending || !logoFile}>{pending ? 'Saving…' : 'Upload selected logo'}</button>{profile?.logo && <button className="workflow-link clinic-profile-remove" type="button" onClick={() => void changeLogo(true)} disabled={pending}>Remove logo</button>}</div></div>}
           </section>
