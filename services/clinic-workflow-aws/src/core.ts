@@ -5,7 +5,7 @@ import { historyIdFor, validHistoryId, type HistoryEntry } from './history.ts';
 import { renderPrescriptionPdf, UnsupportedPrescriptionText } from './prescription-pdf.ts';
 import { handleBilling } from './billing-routes.ts';
 import type { BillingStore } from './billing.ts';
-import { clinicForPrint, defaultProfile, parseLogoUpload, profileFields, profileForClient,
+import { clinicForPrint, defaultProfile, parseLogoBytes, parseLogoUpload, profileFields, profileForClient,
   type ClinicProfile, type LogoContentType, type LogoUpload } from './profile.ts';
 
 export type Role = 'clinic_admin' | 'doctor' | 'receptionist' | 'nurse' | 'lab_tech' | 'billing' | 'pharmacist';
@@ -71,6 +71,10 @@ export interface HttpInput {
 }
 export interface HttpResult { statusCode: number; headers: Record<string, string>; body: string; isBase64Encoded?: boolean }
 export interface LogoStore {
+  preparePending(slug: string, contentType: LogoContentType): Promise<{
+    uploadId: string; url: string; fields: Record<string, string> }>;
+  readPending(slug: string, uploadId: string, contentType: LogoContentType): Promise<Uint8Array | null>;
+  removePending(slug: string, uploadId: string, contentType: LogoContentType): Promise<void>;
   put(slug: string, upload: LogoUpload): Promise<string>;
   get(slug: string, logo: NonNullable<ClinicProfile['logo']>): Promise<{ bytes: Uint8Array; contentType: LogoContentType }>;
   removeStaged(key: string): Promise<void>;
@@ -328,11 +332,11 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
       try {
         if (!safeEqual(input.headers['x-clinicpluz-edge-key'] ?? '', config.edgeKey)) return result(403, { error: 'Forbidden' });
         if (input.headers.origin && input.headers.origin !== config.publicOrigin) return result(403, { error: 'Origin rejected' });
-        const match = /^\/api\/workflow\/clinics\/([a-z0-9-]+)\/(profile(?:\/logo)?|dashboard|doctors|patients(?:\/search)?|appointments(?:\/check-in)?|billing\/(?:config|episodes|read|consultation-fee\/read|consultation-charge|fulfillment(?:\/read)?|payments|receipt)|consultations(?:\/(?:read|vitals|draft|finalize|medicines\/search|history\/(?:list|detail)|prescriptions(?:\/read|\/email(?:\/preview)?)?))?)$/.exec(input.path);
+        const match = /^\/api\/workflow\/clinics\/([a-z0-9-]+)\/(profile(?:\/logo(?:\/(?:prepare|complete))?)?|dashboard|doctors|patients(?:\/search)?|appointments(?:\/check-in)?|billing\/(?:config|episodes|read|consultation-fee\/read|consultation-charge|fulfillment(?:\/read)?|payments|receipt)|consultations(?:\/(?:read|vitals|draft|finalize|medicines\/search|history\/(?:list|detail)|prescriptions(?:\/read|\/email(?:\/preview)?)?))?)$/.exec(input.path);
         if (!match || !slug(match[1])) return result(404, { error: 'Not found' });
         const clinicSlug = match[1];
         const endpoint = match[2];
-        const isProfile = endpoint === 'profile' || endpoint === 'profile/logo';
+        const isProfile = endpoint === 'profile' || endpoint.startsWith('profile/logo');
         if (input.method !== 'GET' && input.method !== 'POST' &&
             !(isProfile && (input.method === 'PUT' || input.method === 'DELETE'))) {
           return result(404, { error: 'Not found' });
@@ -419,6 +423,50 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
             return binaryImage(image.bytes, image.contentType);
           }
           if (!canEdit) return result(403, { error: 'Profile edit denied' });
+          if (input.method === 'POST' && endpoint === 'profile/logo/prepare') {
+            const request = body(input, 512);
+            if (!request || !hasOnly(request, ['expectedRevision', 'contentType']) ||
+                !profileRevision(request.expectedRevision) ||
+                (request.contentType !== 'image/png' && request.contentType !== 'image/jpeg')) {
+              return result(400, { error: 'Invalid clinic logo request' });
+            }
+            if (current.revision !== request.expectedRevision) return result(409, { error: 'Clinic profile changed; reload' });
+            if (!logos) return result(503, { error: 'Clinic logo unavailable' });
+            return result(200, await logos.preparePending(clinicSlug, request.contentType));
+          }
+          if (input.method === 'POST' && endpoint === 'profile/logo/complete') {
+            const request = body(input, 512);
+            if (!request || !hasOnly(request, ['expectedRevision', 'contentType', 'uploadId']) ||
+                !profileRevision(request.expectedRevision) ||
+                (request.contentType !== 'image/png' && request.contentType !== 'image/jpeg') ||
+                typeof request.uploadId !== 'string' ||
+                !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(request.uploadId)) {
+              return result(400, { error: 'Invalid clinic logo request' });
+            }
+            if (current.revision !== request.expectedRevision) return result(409, { error: 'Clinic profile changed; reload' });
+            if (!logos) return result(503, { error: 'Clinic logo unavailable' });
+            const contentType = request.contentType;
+            const bytes = await logos.readPending(clinicSlug, request.uploadId, contentType);
+            const upload = bytes && await parseLogoBytes(contentType, bytes);
+            if (!upload) return result(400, { error: 'Invalid or expired clinic logo upload' });
+            const key = await logos.put(clinicSlug, upload);
+            let saved: boolean;
+            try {
+              const next: ClinicProfile = { ...current, revision: current.revision + 1,
+                logo: { key, contentType: upload.contentType, sha256: upload.sha256 } };
+              saved = await store.saveClinicProfile(clinicSlug, next, current.revision,
+                member.sub, now().toISOString(), 'profile.logo_added');
+              if (saved) {
+                await logos.removePending(clinicSlug, request.uploadId, contentType).catch(() => undefined);
+                return result(200, shown(next));
+              }
+            } catch (error) {
+              await logos.removeStaged(key).catch(() => undefined);
+              throw error;
+            }
+            await logos.removeStaged(key).catch(() => undefined);
+            return result(409, { error: 'Clinic profile changed; reload' });
+          }
           if (input.method === 'PUT' && endpoint === 'profile') {
             const request = body(input, 4096);
             if (!request || !hasOnly(request, ['expectedRevision', 'displayName', 'address', 'phone', 'email']) ||
