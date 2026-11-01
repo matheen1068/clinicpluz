@@ -51,7 +51,8 @@ async function initialize() {
       } } : {}),
     },
     new DynamoBillingStore(db, required('CLINICAL_TABLE')),
-    new S3ClinicLogoStore(new S3Client({}), required('PROFILE_LOGO_BUCKET')),
+    new S3ClinicLogoStore(new S3Client({}), required('PROFILE_LOGO_BUCKET'),
+      required('PENDING_PROFILE_LOGO_BUCKET')),
   );
 }
 
