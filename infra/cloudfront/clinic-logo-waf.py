@@ -78,9 +78,15 @@ def main():
     session = boto3.Session(region_name="us-east-1")
     if session.client("sts").get_caller_identity()["Account"] != ACCOUNT:
         raise ValueError("Wrong AWS account")
-    distribution = session.client("cloudfront").get_distribution_config(Id=DISTRIBUTION)["DistributionConfig"]
+    cloudfront = session.client("cloudfront")
+    distribution = cloudfront.get_distribution_config(Id=DISTRIBUTION)["DistributionConfig"]
     if distribution.get("WebACLId") != WEB_ACL_ARN:
         raise ValueError("Clinic App distribution has a different Web ACL")
+    associated = [item["Id"] for page in cloudfront.get_paginator("list_distributions").paginate()
+                  for item in page.get("DistributionList", {}).get("Items", [])
+                  if item.get("WebACLId") == WEB_ACL_ARN]
+    if associated != [DISTRIBUTION]:
+        raise ValueError("Web ACL is shared with another distribution; inspect before changing it")
     waf = session.client("wafv2")
     response = waf.get_web_acl(Name=WEB_ACL_NAME, Scope="CLOUDFRONT", Id=WEB_ACL_ID)
     acl = response["WebACL"]
