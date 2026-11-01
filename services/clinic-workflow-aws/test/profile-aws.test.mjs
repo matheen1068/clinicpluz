@@ -19,6 +19,12 @@ const s3Stub = `
   export class GetObjectCommand { constructor(input) { this.input = input; } }
   export class DeleteObjectCommand { constructor(input) { this.input = input; } }
 `;
+const presignStub = `
+  export async function createPresignedPost(_client, options) {
+    return { url: 'https://private-upload.s3.ap-south-1.amazonaws.com/',
+      fields: { key: options.Key, ...options.Fields, policy: 'test' } };
+  }
+`;
 registerHooks({ resolve(specifier, context, nextResolve) {
   if (specifier === '@aws-sdk/client-dynamodb') {
     return { url: `data:text/javascript,${encodeURIComponent(dynamoStub)}`, shortCircuit: true };
@@ -28,6 +34,9 @@ registerHooks({ resolve(specifier, context, nextResolve) {
   }
   if (specifier === '@aws-sdk/client-s3') {
     return { url: `data:text/javascript,${encodeURIComponent(s3Stub)}`, shortCircuit: true };
+  }
+  if (specifier === '@aws-sdk/s3-presigned-post') {
+    return { url: `data:text/javascript,${encodeURIComponent(presignStub)}`, shortCircuit: true };
   }
   if (specifier === './history.js' && context.parentURL?.endsWith('/src/aws.ts')) {
     return nextResolve('./history.ts', context);
@@ -144,4 +153,29 @@ test('private S3 logo adapter pins branch key, metadata, content type, length an
     /Invalid clinic logo key/);
   await logos.removeStaged(key);
   assert.equal(commands.at(-1).constructor.name, 'DeleteObjectCommand');
+});
+
+test('temporary logo store signs an exact upload and reads only fresh bounded objects', async () => {
+  const bytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9wYpaJ8AAAAASUVORK5CYII=', 'base64');
+  const commands = [];
+  let object = { Body: { async transformToByteArray() { return bytes; } },
+    ContentType: 'image/png', ContentLength: bytes.length, LastModified: new Date() };
+  const client = { async send(command) {
+    commands.push(command);
+    if (command.constructor.name === 'GetObjectCommand') return object;
+    return {};
+  } };
+  const logos = new S3ClinicLogoStore(client, 'approved-logos', 'pending-logos');
+  const signed = await logos.preparePending('goodwell', 'image/png');
+  assert.match(signed.uploadId, /^[0-9a-f-]{36}$/);
+  assert.equal(signed.fields.key, `staged/goodwell/${signed.uploadId}.png`);
+  assert.equal((await logos.readPending('goodwell', signed.uploadId, 'image/png')).length, bytes.length);
+  assert.equal(commands[0].input.Bucket, 'pending-logos');
+  object = { ...object, ContentLength: 3_000_001 };
+  assert.equal(await logos.readPending('goodwell', signed.uploadId, 'image/png'), null);
+  object = { ...object, ContentLength: bytes.length, LastModified: new Date(Date.now() - 11 * 60_000) };
+  assert.equal(await logos.readPending('goodwell', signed.uploadId, 'image/png'), null);
+  await logos.removePending('goodwell', signed.uploadId, 'image/png');
+  assert.equal(commands.at(-1).input.Bucket, 'pending-logos');
+  await assert.rejects(() => logos.readPending('blesswell', '../goodwell', 'image/png'), /Invalid pending/);
 });
