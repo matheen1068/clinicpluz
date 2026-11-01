@@ -569,3 +569,65 @@ select:focus-visible, input:focus-visible { outline: 3px solid #82d6a3; outline-
   .prescription-print li p { margin: 3px 0; }
   .prescription-print footer { margin-top: 25px; padding-top: 9px; border-top: 1px solid #777; font-size: 9pt; }
 }
+
+.clinic-profile-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 2px 15px; color: #6e8475; font-size: 12px; }
+.clinic-profile-grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(280px, .85fr); gap: 18px; align-items: start; }
+.clinic-profile-edit { display: grid; gap: 18px; min-width: 0; }
+.clinic-profile-state { min-height: 150px; color: #597263; }
+.clinic-profile-state h4 { margin-bottom: 8px; }
+.clinic-profile-state p { font-size: 13px; line-height: 1.55; }
+.clinic-profile-form { display: grid; gap: 15px; }
+.clinic-profile-form label { display: block; min-width: 0; }
+.clinic-profile-form .workflow-fields { gap: 15px; }
+.clinic-profile-form textarea { display: block; width: 100%; min-height: 96px; margin-top: 7px; padding: 10px 11px; color: #1b3b32; border: 1px solid #cbded2; border-radius: 9px; background: #fff; font: inherit; font-size: 13px; line-height: 1.5; resize: vertical; }
+.clinic-profile-form textarea:disabled { background: #f3f7f4; }
+.clinic-profile-form textarea:focus-visible, .clinic-profile-logo-actions input:focus-visible { outline: 3px solid #82d6a3; outline-offset: 2px; }
+.clinic-profile-actions { display: flex; justify-content: space-between; align-items: center; gap: 15px; margin-top: 5px; padding-top: 16px; border-top: 1px solid #e4eee6; }
+.clinic-profile-actions span { color: #6f8476; font-size: 12px; line-height: 1.45; }
+.clinic-profile-actions .workflow-action { width: auto; flex: 0 0 auto; margin: 0; }
+.clinic-profile-logo-row { display: flex; gap: 15px; align-items: center; padding: 14px; border: 1px solid #dfe9e1; border-radius: 13px; background: #f8fbf8; }
+.clinic-profile-logo-frame { display: grid; place-items: center; width: 78px; height: 78px; flex: 0 0 78px; border: 1px solid #d3e6d9; border-radius: 15px; background: #fff; overflow: hidden; }
+.clinic-profile-logo-frame img { width: 100%; height: 100%; object-fit: contain; }
+.clinic-profile-logo-frame span { color: #207250; font-size: 29px; font-weight: 800; }
+.clinic-profile-logo-row strong { color: #1f4b37; font-size: 13px; }
+.clinic-profile-logo-row p { margin: 5px 0 0; color: #708476; font-size: 11px; line-height: 1.5; }
+.clinic-profile-logo-actions { display: grid; gap: 9px; margin-top: 16px; }
+.clinic-profile-logo-actions label { color: #355747; font-size: 12px; font-weight: 700; }
+.clinic-profile-logo-actions input { width: 100%; max-width: 420px; color: #41604d; font-size: 12px; }
+.clinic-profile-logo-actions > div { display: flex; flex-wrap: wrap; gap: 8px; }
+.clinic-profile-logo-actions .workflow-link { min-height: 38px; }
+.clinic-profile-remove { color: #9b413e; border-color: #e7c6c2; }
+.clinic-profile-preview { position: sticky; top: 16px; background: linear-gradient(155deg, #fff 0%, #f6fbf7 100%); }
+.clinic-profile-preview-head { display: flex; align-items: center; gap: 13px; margin: 22px 0; padding-bottom: 20px; border-bottom: 1px solid #deebe1; }
+.clinic-profile-preview-head > img, .clinic-profile-preview-head > span { display: grid; place-items: center; width: 60px; height: 60px; flex: 0 0 60px; border: 1px solid #d2e6d9; border-radius: 13px; background: #fff; object-fit: contain; color: #207250; font-size: 23px; font-weight: 800; }
+.clinic-profile-preview-head strong { display: block; color: #1d4735; font-size: 16px; line-height: 1.25; overflow-wrap: anywhere; }
+.clinic-profile-preview-head small { display: block; margin-top: 5px; color: #789080; font-size: 11px; line-height: 1.4; }
+.clinic-profile-preview dl { margin: 0; }
+.clinic-profile-preview dl > div { padding: 12px 0; border-top: 1px solid #e2eee4; }
+.clinic-profile-preview dt { color: #728779; font-size: 11px; font-weight: 700; }
+.clinic-profile-preview dd { margin: 5px 0 0; color: #254834; font-size: 13px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.clinic-profile-preview > p { margin-top: 20px; color: #718577; font-size: 11px; line-height: 1.55; }
+.workspace-header { border-color: #15564f; background: radial-gradient(circle at 89% -30%, rgba(77, 173, 157, .25), transparent 45%), linear-gradient(125deg, #092f38, #124e4b); color: #fff; box-shadow: 0 18px 38px rgba(8, 60, 59, .16); }
+.workspace-header-main { display: flex; align-items: flex-start; gap: 16px; min-width: 0; }
+.workspace-header-main > .clinic-mark { flex: 0 0 auto; width: 43px; height: 43px; border: 1px solid rgba(166, 234, 218, .33); background: rgba(125, 219, 192, .12); color: #b5f2dc; }
+.workspace-header-logo { width: 43px; height: 43px; flex: 0 0 43px; padding: 3px; border: 1px solid rgba(166, 234, 218, .4); border-radius: 11px; background: #fff; object-fit: contain; }
+.workspace-header-main h2 { color: #fff; overflow-wrap: anywhere; }
+.workspace-header .eyebrow { color: #9bdcc9; }
+.workspace-header .workspace-subtitle { color: #c3ddd5; line-height: 1.6; }
+.workspace-header .workspace-subtitle strong { color: #fff; }
+.workspace-header .session-badge { color: #b8e8d8; }
+.workspace-header .secondary-button { border-color: rgba(206, 239, 229, .7); background: #fff; color: #0d4e48; }
+.workspace-role { display: inline-block; margin-left: 6px; padding: 2px 8px; border-radius: 999px; background: #b5e9d0; color: #174a39; font-size: 11px; font-weight: 800; vertical-align: baseline; }
+.workspace-role--doctor { background: #c8e7fa; color: #174d6c; }
+.workspace-role--receptionist { background: #f9dcac; color: #6c4616; }
+.workspace-role--nurse { background: #e1d6fa; color: #4a3e79; }
+.workspace-role--pharmacist { background: #f5dfaa; color: #665017; }
+.workspace-role--lab_tech { background: #d3e9f4; color: #31576f; }
+.workspace-role--billing { background: #f0dfc8; color: #6a4c2f; }
+.workspace-nav { border-color: #cae2dc; background: #e6f1ee; }
+.workspace-nav button { min-height: 42px; color: #345d57; font-size: 14px; }
+.workspace-nav button[aria-current="page"] { background: #0e5c56; color: #fff; box-shadow: 0 4px 12px rgba(10, 79, 75, .18); }
+.workflow-form input:not([type="radio"]), .workflow-form select, .clinic-profile-form textarea { min-height: 44px; font-size: 14px; }
+@media (max-width: 900px) { .clinic-profile-grid { grid-template-columns: 1fr; } .clinic-profile-preview { position: static; } }
+@media (max-width: 600px) { .clinic-profile-actions { flex-direction: column; align-items: stretch; } .clinic-profile-actions .workflow-action { width: 100%; } .clinic-profile-form .workflow-fields { grid-template-columns: 1fr; } .clinic-profile-toolbar { align-items: flex-start; } .workspace-header { flex-wrap: wrap; gap: 14px; } .workspace-header-main { gap: 12px; } .workspace-header-main > .clinic-mark, .workspace-header-logo { width: 38px; height: 38px; flex-basis: 38px; } .workspace-header-actions { width: 100%; align-items: flex-end; } }
+@media print { .clinic-profile { display: none !important; } .prescription-print .print-clinic-heading { display: flex; align-items: flex-start; gap: 16px; } .prescription-print .print-clinic-logo { display: block; max-width: 92px; max-height: 72px; object-fit: contain; } .prescription-print .print-clinic-contact { margin: 4px 0; font: 9pt/1.35 Arial, sans-serif; white-space: pre-wrap; } }

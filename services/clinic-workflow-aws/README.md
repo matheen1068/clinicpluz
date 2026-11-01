@@ -6,12 +6,19 @@ The structured medicine timing and reception/pharmacy handoff routes were deploy
 
 The billing routes below are **local implementation only** as of 2026-10-15. They have not been deployed or connected to real payments, taxes, or patient records.
 
+The clinic profile and private logo routes below are a local synthetic-demo implementation dated 2026-11-02. They have not been deployed or used with real clinic branding.
+
 ## API and access boundary
 
 The same-origin routes are under `/api/workflow/clinics/:slug`:
 
 | Method | Path | Entitlement | Result |
 | --- | --- | --- | --- |
+| GET | `/profile` | none; active clinic staff only | Clinic identity, profile revision, logo URL, and `canEdit` |
+| PUT | `/profile` | none; configured profile editor only | Replace name/address/phone/email with revision guard |
+| GET | `/profile/logo` | none; active clinic staff only | Private PNG/JPEG binary through authenticated API |
+| POST | `/profile/logo` | none; configured profile editor only | Validate and add/replace a private logo |
+| DELETE | `/profile/logo` | none; configured profile editor only | Remove active logo from the profile |
 | GET | `/doctors` | `appointments` | Active doctor roster |
 | POST | `/patients/search` | `patient_intake` | Prefix search from JSON `{ "query": "..." }` |
 | POST | `/patients` | `patient_intake` | Register with name, phone, integer `ageYears`, sex, optional email or `contactPatientId` |
@@ -41,7 +48,17 @@ The same-origin routes are under `/api/workflow/clinics/:slug`:
 | POST | `/consultations/draft` | `consultations` | Assigned doctor saves notes and medication entries |
 | POST | `/consultations/finalize` | `consultations` | Assigned doctor finalizes a complete draft |
 
-Every route requires the existing opaque `__Host-cpz_session` cookie and independently checks its hash in the auth table, expiry, clinic path, active clinic, active membership, Cognito user state, role, and the clinic's `ENTITLEMENTS` record. Only `clinic_admin`, `receptionist`, and `nurse` can access these first reception routes. Missing or disabled entitlement fails closed. POST additionally requires the exact configured `Origin` and the session's `X-CSRF-Token`; patient search is POST so names and phone numbers stay out of URLs. All responses are JSON with `Cache-Control: no-store`. No browser-supplied clinic ID, role, or entitlement grants access.
+Every route requires the existing opaque `__Host-cpz_session` cookie and independently checks its hash in the auth table, expiry, clinic path, active clinic, active membership, Cognito user state, and role. Feature routes also check the clinic's `ENTITLEMENTS` record; profile identity is separate from feature entitlements. Only `clinic_admin`, `receptionist`, and `nurse` can access the first reception routes. Missing or disabled entitlement fails closed for those routes. Mutations require the exact configured `Origin` and the session's `X-CSRF-Token`; patient search is POST so names and phone numbers stay out of URLs. Responses are `Cache-Control: no-store`; profile logo reads return a binary image, while other routes return JSON. No browser-supplied clinic ID, role, or entitlement grants access.
+
+### Clinic identity and logo (local synthetic demo)
+
+`GET /profile` returns `{profile:{slug,displayName,address,phone,email,revision,logo},canEdit}`. Contact fields are nullable. The logo is either `null` or `{url:"/api/workflow/clinics/<slug>/profile/logo",contentType:"image/png"|"image/jpeg"}`; no S3 key is returned. Before a profile is saved, `revision:0` uses the authenticated clinic META display name and null contact/logo. All active staff roles may read the clinic identity and image. Only configured editors may write; by default, when no access item exists, these are `clinic_admin`, `receptionist`, and `doctor`. Nurse, pharmacist, lab, and billing roles are read-only until explicitly enabled. An invalid access item fails closed.
+
+The Control Panel may replace a strongly consistent **auth-table** item `pk=CLINIC#<slug>, sk=PROFILE_ACCESS` containing `editRoles` as a DynamoDB List of role Strings and numeric `version`. An explicit empty list denies all edits. The workflow reads this item on every profile request; the Control Panel owns changes to it and must use a conditional version update plus its own audit. This service does not let clinic staff change their own edit-role list.
+
+`PUT /profile` fully replaces `{expectedRevision,displayName,address,phone,email}` while preserving the active logo. Display name is trimmed to 2–120 characters; address is null or 1–300; phone is null or has 7–15 digits with basic phone punctuation; email is null or a lowercased address up to 254 characters. Control characters and angle brackets are rejected. `POST /profile/logo` accepts `{expectedRevision,contentType,dataBase64}` with canonical base64 PNG/JPEG only, at most 128 KiB decoded and dimensions at most 2048×2048; SVG and other formats are rejected. `DELETE /profile/logo` accepts `{expectedRevision}` and clears the active logo. All writes require Origin+CSRF, compare the persisted revision, and write a metadata-only `profile.*` audit item in the same DynamoDB transaction. A stale edit returns `409`. Logo upload stages a random-key object in a private, encrypted, public-access-blocked S3 bucket, then conditionally commits its key; a failed commit attempts staged-object cleanup. Removing or replacing a logo hides the old object but does not yet purge historical objects; a reviewed retention/cleanup policy is required before production.
+
+Authorized finalized prescription reads include the **current server-owned** profile in `printablePrescription.clinic` as `{slug,displayName,address,phone,email,logoUrl}`; the same current display name appears in `encounter.clinic`. The logo URL is the authenticated same-origin `/profile/logo` route. The synthetic SES PDF renders the same current clinic details and embeds the validated private logo; it never trusts browser-supplied identity or image bytes. Old finalized prescriptions therefore show the current clinic branding on reprint, while the finalizing doctor's identity remains frozen. Historical clinic identity snapshots, legal prescription requirements, Unicode PDF fonts, S3 object retention, and end-to-end deployment verification are follow-on work. Unsupported non-ASCII PDF text still returns the existing safe `422` rather than corrupting a prescription.
 
 Patient registration always creates a new server-issued UUID and separate canonical, name-index, and phone-index records, even when another patient has the same phone. `POST /patients` accepts optional `contactPatientId` (existing patient ID in the same clinic, or `null`); when supplied, the referenced patient's normalized phone must equal the new patient's phone. The transaction verifies that the referenced contact and its phone still exist before writing the new patient. This field is a shared-contact link only: it does not assert legal guardianship, merge records, or copy the contact's email. Both `POST /patients` and `POST /patients/search` return `contactPatientId: string | null` on each patient; older records without the field read as `null`. The contact must be selected explicitly by clinic staff, and no patient data is returned through another clinic's path.
 

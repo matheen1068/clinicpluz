@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  ConsultationApiError, finalizeEncounter, getConsultationQueue, parseMedication, readEncounter, searchMedicines,
+  ConsultationApiError, finalizeEncounter, getConsultationQueue, parseMedication, parsePrintablePrescription, readEncounter, searchMedicines,
   saveDraft, saveVitals,
 } from './consultationApi.ts';
 
@@ -17,6 +17,16 @@ const medicine = {
   name: 'Synthetic medicine', strength: '5 mg', dose: '1 tablet', route: 'oral',
   frequency: 'once daily', duration: '3 days', instructions: 'Synthetic instructions',
 };
+
+test('prescription print accepts server clinic contact and rejects an external logo URL', () => {
+  const base = finalizedEncounter().printablePrescription;
+  const clinic = { ...base.clinic, address: '1 Pilot Road', phone: '+91 98765 43210',
+    email: 'clinic@example.test', logoUrl: '/api/workflow/clinics/goodwell/profile/logo' };
+  const parsed = parsePrintablePrescription({ ...base, clinic });
+  assert.deepEqual(parsed.clinic, clinic);
+  assert.throws(() => parsePrintablePrescription({ ...base,
+    clinic: { ...clinic, logoUrl: 'https://untrusted.example/logo.png' } }), ConsultationApiError);
+});
 
 test('medicine timing accepts explicit clinician choices and normalizes legacy rows', () => {
   assert.deepEqual(parseMedication(medicine), { ...medicine, timing: null });

@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import {
   ApiError,
   getClinicBootstrap,
@@ -15,6 +15,10 @@ import Consultation from './Consultation';
 import PrescriptionHandoff from './PrescriptionHandoff';
 import Billing from './Billing';
 import Dashboard from './Dashboard';
+import ClinicProfile from './ClinicProfile';
+import { ClinicProfileApiError, getClinicProfile, type ClinicProfile as ClinicProfileRecord } from './clinicProfileApi';
+
+type ClinicModule = 'dashboard' | 'reception' | 'vitals' | 'consultation' | 'prescriptions' | 'billing' | 'profile';
 
 type View =
   | { kind: 'checking' }
@@ -183,28 +187,54 @@ function StatusCard({ kind, onRetry }: { kind: 'checking' | 'invalid-host' | 'un
 
 function SignedInShell({ bootstrap, session, onSignedOut, onUnverified }: { bootstrap: ClinicBootstrap; session: StaffSession; onSignedOut: () => void; onUnverified: () => void }) {
   const [busy, setBusy] = useState(false);
-  const [activeModule, setActiveModule] = useState<'dashboard' | 'reception' | 'vitals' | 'consultation' | 'prescriptions' | 'billing'>(session.user.role === 'doctor' || session.user.role === 'receptionist' || session.user.role === 'clinic_admin' ? 'dashboard' : session.user.role === 'pharmacist' ? 'prescriptions' : 'reception');
+  const [activeModule, setActiveModule] = useState<ClinicModule>(session.user.role === 'doctor' || session.user.role === 'receptionist' || session.user.role === 'clinic_admin' ? 'dashboard' : session.user.role === 'pharmacist' ? 'prescriptions' : 'reception');
   const [consultationDirty, setConsultationDirty] = useState(false);
   const [consultationPending, setConsultationPending] = useState(false);
+  const [profileDirty, setProfileDirty] = useState(false);
+  const [profilePending, setProfilePending] = useState(false);
+  const [clinicDisplayName, setClinicDisplayName] = useState(bootstrap.clinic.displayName);
+  const [clinicLogoUrl, setClinicLogoUrl] = useState<string | null>(null);
+  const identityRevision = useRef(-1);
   const canDashboard = session.user.role === 'doctor' || session.user.role === 'receptionist' || session.user.role === 'clinic_admin';
   const canReception = session.user.role === 'clinic_admin' || session.user.role === 'receptionist' || session.user.role === 'nurse';
   const canVitals = session.user.role === 'clinic_admin' || session.user.role === 'receptionist' || session.user.role === 'nurse';
   const canConsultation = session.user.role === 'doctor';
   const canPrescriptions = session.user.role === 'clinic_admin' || session.user.role === 'receptionist' || session.user.role === 'pharmacist';
   const canBilling = session.user.role === 'clinic_admin' || session.user.role === 'receptionist';
+  // All signed-in staff can inspect clinic contact details; the profile API decides who may edit.
+  const canProfile = true;
 
   useEffect(() => { setActiveModule(session.user.role === 'doctor' || session.user.role === 'receptionist' || session.user.role === 'clinic_admin' ? 'dashboard' : session.user.role === 'pharmacist' ? 'prescriptions' : 'reception'); }, [session.user.role]);
+  useEffect(() => {
+    const controller = new AbortController();
+    void getClinicProfile(session.clinicSlug, controller.signal).then(({ profile }) => {
+      if (!controller.signal.aborted) updateIdentity(profile);
+    }).catch((caught: unknown) => {
+      if (!controller.signal.aborted && caught instanceof ClinicProfileApiError && caught.status === 401) onUnverified();
+    });
+    return () => controller.abort();
+  }, [session.clinicSlug]);
 
-  function selectModule(next: 'dashboard' | 'reception' | 'vitals' | 'consultation' | 'prescriptions' | 'billing') {
-    if (next === activeModule || consultationPending ||
+  function updateIdentity(profile: ClinicProfileRecord) {
+    if (profile.revision < identityRevision.current) return;
+    identityRevision.current = profile.revision;
+    setClinicDisplayName(profile.displayName);
+    setClinicLogoUrl(profile.logo?.url ?? null);
+  }
+
+  function selectModule(next: ClinicModule) {
+    if (next === activeModule || consultationPending || profilePending ||
         ((activeModule === 'consultation' || activeModule === 'vitals') && consultationDirty &&
-          !window.confirm('Leave this visit with unsaved or unverified changes?'))) return;
+          !window.confirm('Leave this visit with unsaved or unverified changes?')) ||
+        (activeModule === 'profile' && profileDirty &&
+          !window.confirm('Leave clinic details with unsaved changes?'))) return;
     setActiveModule(next);
   }
 
   async function handleSignOut() {
-    if (consultationPending) return;
+    if (consultationPending || profilePending) return;
     if (consultationDirty && !window.confirm('Leave consultation with unsaved or unverified changes and sign out?')) return;
+    if (profileDirty && !window.confirm('Leave clinic details with unsaved changes and sign out?')) return;
     setBusy(true);
     try {
       if (!clinicSlug) throw new ApiError(null, 'Clinic link missing');
@@ -221,15 +251,16 @@ function SignedInShell({ bootstrap, session, onSignedOut, onUnverified }: { boot
 
   return (
     <div className="workspace-shell">
-      <header className="workspace-header"><div><span className="eyebrow">CLINIC WORKSPACE</span><h2>{bootstrap.clinic.displayName}</h2><p className="workspace-subtitle">Signed in as <strong>{session.user.displayName}</strong> · {ROLE_LABELS[session.user.role]}</p></div><div className="workspace-header-actions"><span className="session-badge">● Secure session</span><button className="secondary-button" type="button" onClick={handleSignOut} disabled={busy || consultationPending}>{busy ? 'Signing out…' : consultationPending ? 'Saving…' : 'Sign out'} <ArrowIcon /></button></div></header>
-      {(canDashboard || canReception || canVitals || canConsultation || canPrescriptions || canBilling) && <nav className="workspace-nav" aria-label="Clinic modules">{canDashboard && <button type="button" aria-current={activeModule === 'dashboard' ? 'page' : undefined} disabled={consultationPending} onClick={() => selectModule('dashboard')}>Dashboard</button>}{canReception && <button type="button" aria-current={activeModule === 'reception' ? 'page' : undefined} disabled={consultationPending} onClick={() => selectModule('reception')}>Reception</button>}{canVitals && <button type="button" aria-current={activeModule === 'vitals' ? 'page' : undefined} disabled={consultationPending} onClick={() => selectModule('vitals')}>Vitals</button>}{canConsultation && <button type="button" aria-current={activeModule === 'consultation' ? 'page' : undefined} disabled={consultationPending} onClick={() => selectModule('consultation')}>Consultations</button>}{canPrescriptions && <button type="button" aria-current={activeModule === 'prescriptions' ? 'page' : undefined} disabled={consultationPending} onClick={() => selectModule('prescriptions')}>Prescriptions</button>}{canBilling && <button type="button" aria-current={activeModule === 'billing' ? 'page' : undefined} disabled={consultationPending} onClick={() => selectModule('billing')}>Billing</button>}</nav>}
+      <header className="workspace-header"><div className="workspace-header-main">{clinicLogoUrl ? <img className="workspace-header-logo" src={clinicLogoUrl} alt="" onError={() => setClinicLogoUrl(null)} /> : <ClinicMark light />}<div><span className="eyebrow">CLINIC WORKSPACE · {session.clinicSlug}</span><h2>{clinicDisplayName}</h2><p className="workspace-subtitle">Signed in as <strong>{session.user.displayName}</strong> <span className={`workspace-role workspace-role--${session.user.role}`}>{ROLE_LABELS[session.user.role]}</span></p></div></div><div className="workspace-header-actions"><span className="session-badge">● Secure session</span><button className="secondary-button" type="button" onClick={handleSignOut} disabled={busy || consultationPending || profilePending}>{busy ? 'Signing out…' : consultationPending || profilePending ? 'Saving…' : 'Sign out'} <ArrowIcon /></button></div></header>
+      {(canDashboard || canReception || canVitals || canConsultation || canPrescriptions || canBilling || canProfile) && <nav className="workspace-nav" aria-label="Clinic modules">{canDashboard && <button type="button" aria-current={activeModule === 'dashboard' ? 'page' : undefined} disabled={consultationPending || profilePending} onClick={() => selectModule('dashboard')}>Dashboard</button>}{canReception && <button type="button" aria-current={activeModule === 'reception' ? 'page' : undefined} disabled={consultationPending || profilePending} onClick={() => selectModule('reception')}>Reception</button>}{canVitals && <button type="button" aria-current={activeModule === 'vitals' ? 'page' : undefined} disabled={consultationPending || profilePending} onClick={() => selectModule('vitals')}>Vitals</button>}{canConsultation && <button type="button" aria-current={activeModule === 'consultation' ? 'page' : undefined} disabled={consultationPending || profilePending} onClick={() => selectModule('consultation')}>Consultations</button>}{canPrescriptions && <button type="button" aria-current={activeModule === 'prescriptions' ? 'page' : undefined} disabled={consultationPending || profilePending} onClick={() => selectModule('prescriptions')}>Prescriptions</button>}{canBilling && <button type="button" aria-current={activeModule === 'billing' ? 'page' : undefined} disabled={consultationPending || profilePending} onClick={() => selectModule('billing')}>Billing</button>}{canProfile && <button type="button" aria-current={activeModule === 'profile' ? 'page' : undefined} disabled={consultationPending || profilePending} onClick={() => selectModule('profile')}>Clinic details</button>}</nav>}
       {activeModule === 'dashboard' && canDashboard && <Dashboard clinicSlug={session.clinicSlug} role={session.user.role as 'doctor' | 'receptionist' | 'clinic_admin'} onSessionLost={onUnverified} />}
       {activeModule === 'reception' && canReception && <Workflow clinicSlug={session.clinicSlug} csrfToken={session.csrfToken} role={session.user.role} onSessionLost={onUnverified} onPendingChange={setConsultationPending} />}
       {activeModule === 'vitals' && canVitals && <Consultation clinicSlug={session.clinicSlug} csrfToken={session.csrfToken} role={session.user.role} onSessionLost={onUnverified} onDirtyChange={setConsultationDirty} onPendingChange={setConsultationPending} />}
       {activeModule === 'consultation' && canConsultation && <Consultation clinicSlug={session.clinicSlug} csrfToken={session.csrfToken} role={session.user.role} onSessionLost={onUnverified} onDirtyChange={setConsultationDirty} onPendingChange={setConsultationPending} />}
       {activeModule === 'prescriptions' && canPrescriptions && <PrescriptionHandoff clinicSlug={session.clinicSlug} csrfToken={session.csrfToken} role={session.user.role === 'pharmacist' ? 'pharmacist' : session.user.role === 'clinic_admin' ? 'clinic_admin' : 'receptionist'} onSessionLost={onUnverified} onPendingChange={setConsultationPending} />}
       {activeModule === 'billing' && canBilling && <Billing clinicSlug={session.clinicSlug} csrfToken={session.csrfToken} role={session.user.role === 'clinic_admin' ? 'clinic_admin' : 'receptionist'} onSessionLost={onUnverified} onPendingChange={setConsultationPending} />}
-      {!canDashboard && !canReception && !canVitals && !canConsultation && !canPrescriptions && !canBilling && <section className="workflow-access" role="status"><h3>No clinic modules assigned</h3><p>Contact your clinic administrator for access to an enabled module.</p></section>}
+      {activeModule === 'profile' && canProfile && <ClinicProfile clinicSlug={session.clinicSlug} csrfToken={session.csrfToken} onSessionLost={onUnverified} onDirtyChange={setProfileDirty} onPendingChange={setProfilePending} onIdentityChange={updateIdentity} />}
+      {!canDashboard && !canReception && !canVitals && !canConsultation && !canPrescriptions && !canBilling && activeModule !== 'profile' && <section className="workflow-access" role="status"><h3>No clinic modules assigned</h3><p>Contact your clinic administrator for access to an enabled module.</p></section>}
     </div>
   );
 }

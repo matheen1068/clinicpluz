@@ -2,9 +2,11 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { CognitoIdentityProviderClient } from '@aws-sdk/client-cognito-identity-provider';
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { SESv2Client, SendEmailCommand } from '@aws-sdk/client-sesv2';
+import { S3Client } from '@aws-sdk/client-s3';
 import { createWorkflowApp } from './src/core.js';
 import { CognitoStaffStatus, DynamoAuthStore, DynamoWorkflowStore } from './src/aws.js';
 import { DynamoBillingStore } from './src/billing-aws.js';
+import { S3ClinicLogoStore } from './src/profile-aws.js';
 import { fromHttpApiEvent, invalidHttpApiEvent, type HttpApiEvent } from './src/http-api.js';
 
 function required(name: string): string {
@@ -49,6 +51,7 @@ async function initialize() {
       } } : {}),
     },
     new DynamoBillingStore(db, required('CLINICAL_TABLE')),
+    new S3ClinicLogoStore(new S3Client({}), required('PROFILE_LOGO_BUCKET')),
   );
 }
 

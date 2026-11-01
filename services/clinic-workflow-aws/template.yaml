@@ -83,6 +83,24 @@ Resources:
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: true
 
+  ClinicLogoBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
   WorkflowApi:
     Type: AWS::Serverless::HttpApi
     Properties:
@@ -105,6 +123,7 @@ Resources:
         Variables:
           AUTH_TABLE: !Ref AuthTableName
           CLINICAL_TABLE: !Ref ClinicalTable
+          PROFILE_LOGO_BUCKET: !Ref ClinicLogoBucket
           STAFF_USER_POOL_ID: !Ref StaffUserPoolId
           PUBLIC_ORIGIN: !Ref PublicOrigin
           EDGE_SECRET_ARN: !Ref WorkflowEdgeSecret
@@ -141,6 +160,9 @@ Resources:
                 - cognito-idp:AdminGetUser
               Resource: !Ref StaffUserPoolArn
             - Effect: Allow
+              Action: ['s3:GetObject', 's3:PutObject', 's3:DeleteObject']
+              Resource: !Sub '${ClinicLogoBucket.Arn}/clinics/*'
+            - Effect: Allow
               Action:
                 - secretsmanager:GetSecretValue
               Resource: !Ref WorkflowEdgeSecret
@@ -161,6 +183,21 @@ Resources:
                     ses:Recipients: 'false'
           - !Ref AWS::NoValue
       Events:
+        ReadClinicProfile:
+          Type: HttpApi
+          Properties: { ApiId: !Ref WorkflowApi, Path: '/api/workflow/clinics/{slug}/profile', Method: GET, PayloadFormatVersion: '2.0' }
+        UpdateClinicProfile:
+          Type: HttpApi
+          Properties: { ApiId: !Ref WorkflowApi, Path: '/api/workflow/clinics/{slug}/profile', Method: PUT, PayloadFormatVersion: '2.0' }
+        ReadClinicLogo:
+          Type: HttpApi
+          Properties: { ApiId: !Ref WorkflowApi, Path: '/api/workflow/clinics/{slug}/profile/logo', Method: GET, PayloadFormatVersion: '2.0' }
+        UploadClinicLogo:
+          Type: HttpApi
+          Properties: { ApiId: !Ref WorkflowApi, Path: '/api/workflow/clinics/{slug}/profile/logo', Method: POST, PayloadFormatVersion: '2.0' }
+        RemoveClinicLogo:
+          Type: HttpApi
+          Properties: { ApiId: !Ref WorkflowApi, Path: '/api/workflow/clinics/{slug}/profile/logo', Method: DELETE, PayloadFormatVersion: '2.0' }
         Doctors:
           Type: HttpApi
           Properties: { ApiId: !Ref WorkflowApi, Path: '/api/workflow/clinics/{slug}/doctors', Method: GET, PayloadFormatVersion: '2.0' }
