@@ -370,7 +370,7 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
               !(doctorFee && member.role === 'doctor')) {
             return result(403, { error: 'Role not allowed' });
           }
-          if (endpoint.startsWith('billing/fulfillment') && modules.consultations !== true) {
+          if (endpoint.startsWith('billing/fulfillment') && modules?.consultations !== true) {
             return result(403, { error: 'Module unavailable' });
           }
         } else if (isConsultation) {
@@ -390,7 +390,7 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
           if (member.role !== 'clinic_admin' && member.role !== 'receptionist' && member.role !== 'doctor') {
             return result(403, { error: 'Role not allowed' });
           }
-          if (member.role === 'doctor' && modules.consultations !== true) {
+          if (member.role === 'doctor' && modules?.consultations !== true) {
             return result(403, { error: 'Module unavailable' });
           }
         } else {
