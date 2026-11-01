@@ -16,6 +16,7 @@ function message(error: unknown): string {
     if (error.status === 403) return 'Your current clinic access does not allow this change.';
     if (error.status === 413) return 'This logo is too large. Choose a PNG or JPEG up to 3 MB.';
     if (error.message.startsWith('Choose a PNG')) return error.message;
+    if (error.message.startsWith('Logo upload to storage failed')) return error.message;
   }
   return 'Clinic details could not be verified. Please try again.';
 }
