@@ -102,7 +102,8 @@ def main():
         return
 
     allowed = set(waf.meta.service_model.operation_model("UpdateWebACL").input_shape.members)
-    payload = {key: value for key, value in acl.items() if key in allowed}
+    payload = {key: value for key, value in acl.items()
+               if key in allowed and not (key == "Description" and value == "")}
     payload.update(Name=WEB_ACL_NAME, Scope="CLOUDFRONT", Id=WEB_ACL_ID,
                    LockToken=response["LockToken"], Rules=rules)
     waf.update_web_acl(**payload)
