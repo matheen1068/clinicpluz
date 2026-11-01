@@ -51,14 +51,34 @@ test('full profile save clears optional fields and requires an authenticated CSR
 test('logo upload and removal use bounded same-origin routes and revision checks', async () => {
   let calls = 0;
   const restore = mockFetch(async (path, init) => {
-    assert.equal(path, logoUrl);
+    calls++;
+    if (calls === 1) {
+      assert.equal(path, `${logoUrl}/prepare`);
+      assert.equal(init.headers['X-CSRF-Token'], 'csrf-session');
+      const body = JSON.parse(init.body);
+      assert.equal(init.method, 'POST');
+      assert.deepEqual(body, { expectedRevision: 4, contentType: 'image/png' });
+      return Response.json({ uploadId: '00000000-0000-4000-8000-000000000001',
+        url: 'https://private-upload.s3.ap-south-1.amazonaws.com/',
+        fields: { key: 'staged/goodwell/00000000-0000-4000-8000-000000000001.png', 'Content-Type': 'image/png' } });
+    }
+    if (calls === 2) {
+      assert.equal(path, 'https://private-upload.s3.ap-south-1.amazonaws.com/');
+      assert.equal(init.credentials, 'omit');
+      assert.equal(init.method, 'POST');
+      assert.equal(init.body.get('key'), 'staged/goodwell/00000000-0000-4000-8000-000000000001.png');
+      assert.equal(init.body.get('file').size, 3);
+      return new Response(null, { status: 204 });
+    }
     assert.equal(init.headers['X-CSRF-Token'], 'csrf-session');
     const body = JSON.parse(init.body);
-    if (++calls === 1) {
-      assert.equal(init.method, 'POST');
-      assert.deepEqual(body, { expectedRevision: 4, contentType: 'image/png', dataBase64: 'AQID' });
+    if (calls === 3) {
+      assert.equal(path, `${logoUrl}/complete`);
+      assert.deepEqual(body, { expectedRevision: 4, contentType: 'image/png',
+        uploadId: '00000000-0000-4000-8000-000000000001' });
       return Response.json({ profile: { ...profile, revision: 5, logo: { url: logoUrl, contentType: 'image/png' } }, canEdit: true });
     }
+    assert.equal(path, logoUrl);
     assert.equal(init.method, 'DELETE');
     assert.deepEqual(body, { expectedRevision: 5 });
     return Response.json({ profile: { ...profile, revision: 6 }, canEdit: true });
@@ -67,23 +87,49 @@ test('logo upload and removal use bounded same-origin routes and revision checks
     const uploaded = await uploadClinicLogo('goodwell', new File([new Uint8Array([1, 2, 3])], 'logo.png', { type: 'image/png' }), 4, 'csrf-session');
     assert.equal(uploaded.profile.logo.url, logoUrl);
     assert.equal((await removeClinicLogo('goodwell', 5, 'csrf-session')).profile.logo, null);
-    assert.equal(calls, 2);
+    assert.equal(calls, 4);
     await assert.rejects(uploadClinicLogo('goodwell', new File([new Uint8Array(3_000_001)], 'large.png', { type: 'image/png' }), 6, 'csrf-session'), ClinicProfileApiError);
-    assert.equal(calls, 2);
+    assert.equal(calls, 4);
   } finally { restore(); }
 });
 
 test('logo upload accepts a file larger than the old 128 KiB limit', async () => {
   let sent = false;
-  const restore = mockFetch(async (_path, init) => {
-    const body = JSON.parse(init.body);
-    assert.equal(body.dataBase64.length, 4 * Math.ceil((128 * 1024 + 1) / 3));
-    sent = true;
+  const restore = mockFetch(async (path, init) => {
+    if (path === `${logoUrl}/prepare`) return Response.json({
+      uploadId: '00000000-0000-4000-8000-000000000001',
+      url: 'https://private-upload.s3.ap-south-1.amazonaws.com/',
+      fields: { key: 'staged/goodwell/00000000-0000-4000-8000-000000000001.png', 'Content-Type': 'image/png' },
+    });
+    if (path.startsWith('https://')) {
+      assert.equal(init.body.get('file').size, 128 * 1024 + 1);
+      sent = true;
+      return new Response(null, { status: 204 });
+    }
+    assert.equal(path, `${logoUrl}/complete`);
+    assert.deepEqual(JSON.parse(init.body), { expectedRevision: 0, contentType: 'image/png',
+      uploadId: '00000000-0000-4000-8000-000000000001' });
     return Response.json({ profile: { ...profile, revision: 1 }, canEdit: true });
   });
   try {
     await uploadClinicLogo('goodwell', new File([new Uint8Array(128 * 1024 + 1)], 'logo.png', { type: 'image/png' }), 0, 'csrf-session');
     assert.equal(sent, true);
+  } finally { restore(); }
+});
+
+test('logo upload rejects an unexpected storage destination before sending file bytes', async () => {
+  let calls = 0;
+  const restore = mockFetch(async () => {
+    calls++;
+    return Response.json({ uploadId: '00000000-0000-4000-8000-000000000001',
+      url: 'https://example.test/collect',
+      fields: { key: 'staged/goodwell/00000000-0000-4000-8000-000000000001.png',
+        'Content-Type': 'image/png' } });
+  });
+  try {
+    await assert.rejects(uploadClinicLogo('goodwell', new File([new Uint8Array([1])], 'logo.png',
+      { type: 'image/png' }), 0, 'csrf-session'), ClinicProfileApiError);
+    assert.equal(calls, 1);
   } finally { restore(); }
 });
 
