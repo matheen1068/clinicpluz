@@ -5,6 +5,8 @@ import { historyIdFor, validHistoryId, type HistoryEntry } from './history.ts';
 import { renderPrescriptionPdf, UnsupportedPrescriptionText } from './prescription-pdf.ts';
 import { handleBilling } from './billing-routes.ts';
 import type { BillingStore } from './billing.ts';
+import { clinicForPrint, defaultProfile, parseLogoBytes, parseLogoUpload, profileFields, profileForClient,
+  type ClinicProfile, type LogoContentType, type LogoUpload } from './profile.ts';
 
 export type Role = 'clinic_admin' | 'doctor' | 'receptionist' | 'nurse' | 'lab_tech' | 'billing' | 'pharmacist';
 export type Sex = 'female' | 'male' | 'other' | 'undisclosed';
@@ -31,9 +33,14 @@ export interface AuthStore {
   getClinic(slug: string): Promise<Clinic | null>;
   getMembership(slug: string, username: string): Promise<Membership | null>;
   getEntitlements(slug: string): Promise<Entitlements | null>;
+  getProfileAccess(slug: string): Promise<{ editRoles: Role[]; version: number } | null>;
 }
 export interface StaffIdentity { isActive(cognitoUsername: string, sub: string): Promise<boolean> }
 export interface WorkflowStore {
+  getClinicProfile(slug: string): Promise<ClinicProfile | null>;
+  saveClinicProfile(slug: string, profile: ClinicProfile, expectedRevision: number,
+    actorSub: string, at: string, action: 'profile.updated' | 'profile.logo_added' | 'profile.logo_removed'):
+    Promise<boolean>;
   getSchedule(slug: string): Promise<Schedule | null>;
   listDoctors(slug: string): Promise<Doctor[]>;
   listMedicines(slug: string): Promise<MedicineCatalogItem[]>;
@@ -62,7 +69,16 @@ export interface HttpInput {
   method: string; path: string; queryString?: string; headers: Record<string, string | undefined>;
   cookies?: string[]; body?: string; isBase64Encoded?: boolean;
 }
-export interface HttpResult { statusCode: number; headers: Record<string, string>; body: string }
+export interface HttpResult { statusCode: number; headers: Record<string, string>; body: string; isBase64Encoded?: boolean }
+export interface LogoStore {
+  preparePending(slug: string, contentType: LogoContentType): Promise<{
+    uploadId: string; url: string; fields: Record<string, string> }>;
+  readPending(slug: string, uploadId: string, contentType: LogoContentType): Promise<Uint8Array | null>;
+  removePending(slug: string, uploadId: string, contentType: LogoContentType): Promise<void>;
+  put(slug: string, upload: LogoUpload): Promise<string>;
+  get(slug: string, logo: NonNullable<ClinicProfile['logo']>): Promise<{ bytes: Uint8Array; contentType: LogoContentType }>;
+  removeStaged(key: string): Promise<void>;
+}
 export interface PrescriptionEmailConfig {
   allowedRecipient: string;
   send(to: string, pdf: Uint8Array): Promise<string>;
@@ -72,6 +88,7 @@ export interface Config { publicOrigin: string; edgeKey: string; now?: () => Dat
 const ROLES = new Set<Role>(['clinic_admin', 'doctor', 'receptionist', 'nurse', 'lab_tech', 'billing', 'pharmacist']);
 const PRESCRIPTION_ROLES = new Set<Role>(['clinic_admin', 'receptionist', 'pharmacist']);
 const PRESCRIPTION_EMAIL_ROLES = new Set<Role>(['clinic_admin', 'receptionist']);
+const DEFAULT_PROFILE_EDIT_ROLES = new Set<Role>(['clinic_admin', 'receptionist', 'doctor']);
 
 function emailFailureMetadata(error: unknown): { name: string; httpStatusCode?: number; requestId?: string } {
   if (!error || typeof error !== 'object') return { name: 'UnknownError' };
@@ -98,6 +115,12 @@ function result(statusCode: number, value: unknown): HttpResult {
     'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store',
     'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer',
   }, body: JSON.stringify(value) };
+}
+function binaryImage(bytes: Uint8Array, contentType: LogoContentType): HttpResult {
+  return { statusCode: 200, headers: {
+    'content-type': contentType, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff',
+    'content-disposition': 'inline', 'referrer-policy': 'no-referrer',
+  }, body: Buffer.from(bytes).toString('base64'), isBase64Encoded: true };
 }
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -150,6 +173,14 @@ function email(value: unknown): string | null | undefined {
   const clean = value.trim().toLowerCase();
   return clean.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clean) ? clean : undefined;
 }
+function profileRevision(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value < 1_000_000_000;
+}
+async function currentProfile(store: WorkflowStore, clinic: Clinic): Promise<ClinicProfile> {
+  const saved = await store.getClinicProfile(clinic.slug);
+  if (saved && saved.slug !== clinic.slug) throw new Error('Clinic profile mismatch');
+  return saved ?? defaultProfile(clinic.slug, clinic.displayName ?? clinic.slug);
+}
 function calendarDate(value: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const date = new Date(`${value}T00:00:00Z`);
@@ -185,12 +216,12 @@ function publicAppointment(appointment: Appointment) {
   const { id, patientId, patientName, doctorId, doctorName, startAt, source, status } = appointment;
   return { id, patientId, patientName, doctorId, doctorName, startAt, source, status };
 }
-function printablePrescription(encounter: Encounter, clinic: Clinic, patient: Patient) {
+function printablePrescription(encounter: Encounter, profile: ClinicProfile, patient: Patient) {
   if (encounter.status !== 'finalized' || encounter.medications.length === 0) return undefined;
   if (!encounter.finalizedAt || !encounter.finalizedBySub || !encounter.finalizedByDisplayName ||
       encounter.finalizedDoctorId !== encounter.doctorId) throw new Error('Finalized clinician identity unavailable');
   return {
-    clinic: { slug: clinic.slug, displayName: clinic.displayName ?? clinic.slug },
+    clinic: clinicForPrint(profile),
     doctor: { id: encounter.finalizedDoctorId, displayName: encounter.finalizedByDisplayName },
     patient: { id: patient.id, fullName: patient.fullName, ageYears: patient.ageYears, sex: patient.sex },
     appointmentDate: encounter.clinicDate, finalizedAt: encounter.finalizedAt,
@@ -224,7 +255,7 @@ function maskEmail(value: string): string {
   const at = value.lastIndexOf('@');
   return `${value[0]}***${value.slice(at)}`;
 }
-function consultationResponse(encounter: Encounter, clinic: Clinic, patient: Patient, doctor: Doctor, role: Role) {
+function consultationResponse(encounter: Encounter, profile: ClinicProfile, patient: Patient, doctor: Doctor, role: Role) {
   if (encounter.status === 'finalized' && (!encounter.finalizedBySub || !encounter.finalizedByDisplayName ||
       encounter.finalizedDoctorId !== encounter.doctorId)) throw new Error('Finalized clinician identity unavailable');
   const shownDoctor = encounter.status === 'finalized' ?
@@ -236,12 +267,12 @@ function consultationResponse(encounter: Encounter, clinic: Clinic, patient: Pat
     finalizedAt: encounter.finalizedAt,
     patient: { id: patient.id, fullName: patient.fullName, ageYears: patient.ageYears, sex: patient.sex },
     doctor: shownDoctor,
-    clinic: { slug: clinic.slug, displayName: clinic.displayName ?? clinic.slug },
+    clinic: { slug: profile.slug, displayName: profile.displayName },
   };
   if (role !== 'doctor') return { encounter: publicEncounter };
   publicEncounter.note = encounter.note;
   publicEncounter.medications = encounter.medications.map(medicationForDisplay);
-  const prescription = printablePrescription(encounter, clinic, patient);
+  const prescription = printablePrescription(encounter, profile, patient);
   return prescription ? { encounter: publicEncounter, printablePrescription: prescription } : { encounter: publicEncounter };
 }
 
@@ -284,7 +315,7 @@ function historyMatchesEncounter(entry: HistoryEntry, encounter: Encounter | nul
 }
 
 export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, store: WorkflowStore, config: Config,
-  billing?: BillingStore) {
+  billing?: BillingStore, logos?: LogoStore) {
   const origin = new URL(config.publicOrigin);
   if (origin.protocol !== 'https:' || origin.origin !== config.publicOrigin ||
       !/^[a-z0-9-]+\.cloudfront\.net$/.test(origin.hostname) || config.edgeKey.length < 32) {
@@ -301,11 +332,15 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
       try {
         if (!safeEqual(input.headers['x-clinicpluz-edge-key'] ?? '', config.edgeKey)) return result(403, { error: 'Forbidden' });
         if (input.headers.origin && input.headers.origin !== config.publicOrigin) return result(403, { error: 'Origin rejected' });
-        const match = /^\/api\/workflow\/clinics\/([a-z0-9-]+)\/(dashboard|doctors|patients(?:\/search)?|appointments(?:\/check-in)?|billing\/(?:config|episodes|read|consultation-fee\/read|consultation-charge|fulfillment(?:\/read)?|payments|receipt)|consultations(?:\/(?:read|vitals|draft|finalize|medicines\/search|history\/(?:list|detail)|prescriptions(?:\/read|\/email(?:\/preview)?)?))?)$/.exec(input.path);
+        const match = /^\/api\/workflow\/clinics\/([a-z0-9-]+)\/(profile(?:\/logo(?:\/(?:prepare|complete))?)?|dashboard|doctors|patients(?:\/search)?|appointments(?:\/check-in)?|billing\/(?:config|episodes|read|consultation-fee\/read|consultation-charge|fulfillment(?:\/read)?|payments|receipt)|consultations(?:\/(?:read|vitals|draft|finalize|medicines\/search|history\/(?:list|detail)|prescriptions(?:\/read|\/email(?:\/preview)?)?))?)$/.exec(input.path);
         if (!match || !slug(match[1])) return result(404, { error: 'Not found' });
         const clinicSlug = match[1];
         const endpoint = match[2];
-        if (input.method !== 'GET' && input.method !== 'POST') return result(404, { error: 'Not found' });
+        const isProfile = endpoint === 'profile' || endpoint.startsWith('profile/logo');
+        if (input.method !== 'GET' && input.method !== 'POST' &&
+            !(isProfile && (input.method === 'PUT' || input.method === 'DELETE'))) {
+          return result(404, { error: 'Not found' });
+        }
 
         const cookie = readCookie(input);
         if (!cookie) return result(401, { error: 'Not signed in' });
@@ -313,7 +348,8 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
         if (!session || session.expiresAt <= Math.floor(now().getTime() / 1000)) return result(401, { error: 'Not signed in' });
         if (session.clinicSlug !== clinicSlug) return result(403, { error: 'Clinic session mismatch' });
         const [clinic, member, modules] = await Promise.all([
-          auth.getClinic(clinicSlug), auth.getMembership(clinicSlug, session.username), auth.getEntitlements(clinicSlug),
+          auth.getClinic(clinicSlug), auth.getMembership(clinicSlug, session.username),
+          isProfile ? Promise.resolve(null) : auth.getEntitlements(clinicSlug),
         ]);
         if (!clinic?.active || clinic.slug !== clinicSlug || !member?.active || member.clinicSlug !== clinicSlug ||
             member.username !== session.username || member.sub !== session.sub || !ROLES.has(member.role) ||
@@ -325,15 +361,20 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
           endpoint === 'consultations/prescriptions/email/preview';
         const isBilling = endpoint.startsWith('billing/') || endpoint === 'appointments/check-in';
         const module = isBilling ? 'billing' : isConsultation ? 'consultations' : endpoint.startsWith('patients') ? 'patient_intake' : 'appointments';
-        if (!modules || modules.clinicSlug !== clinicSlug || modules[module] !== true) return result(403, { error: 'Module unavailable' });
-        if (isBilling) {
+        if (!isProfile && (!modules || modules.clinicSlug !== clinicSlug || modules[module] !== true)) {
+          return result(403, { error: 'Module unavailable' });
+        }
+        if (isProfile) {
+          // The profile is clinic identity, separate from feature entitlements. Edit rights are
+          // checked against the Control Panel-owned PROFILE_ACCESS record below.
+        } else if (isBilling) {
           const doctorFee = endpoint === 'billing/consultation-fee/read' || endpoint === 'billing/consultation-charge';
           if (endpoint.startsWith('billing/fulfillment') ? member.role !== 'pharmacist' :
               member.role !== 'clinic_admin' && member.role !== 'receptionist' &&
               !(doctorFee && member.role === 'doctor')) {
             return result(403, { error: 'Role not allowed' });
           }
-          if (endpoint.startsWith('billing/fulfillment') && modules.consultations !== true) {
+          if (endpoint.startsWith('billing/fulfillment') && modules?.consultations !== true) {
             return result(403, { error: 'Module unavailable' });
           }
         } else if (isConsultation) {
@@ -353,18 +394,125 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
           if (member.role !== 'clinic_admin' && member.role !== 'receptionist' && member.role !== 'doctor') {
             return result(403, { error: 'Role not allowed' });
           }
-          if (member.role === 'doctor' && modules.consultations !== true) {
+          if (member.role === 'doctor' && modules?.consultations !== true) {
             return result(403, { error: 'Module unavailable' });
           }
         } else {
           const viewing = input.method === 'GET' || endpoint === 'patients/search';
           if (!(viewing ? VIEW_ROLES : WRITE_ROLES).has(member.role)) return result(403, { error: 'Role not allowed' });
         }
-        if (input.method === 'POST' && (input.headers.origin !== config.publicOrigin ||
+        if (input.method !== 'GET' && (input.headers.origin !== config.publicOrigin ||
             !safeEqual(input.headers['x-csrf-token'] ?? '', session.csrfToken))) return result(403, { error: 'CSRF rejected' });
         if (isPrescriptionEmail && input.method !== 'POST') return result(404, { error: 'Not found' });
         if (isPrescriptionHandoff &&
             (endpoint === 'consultations/prescriptions' ? input.method !== 'GET' : input.method !== 'POST')) {
+          return result(404, { error: 'Not found' });
+        }
+
+        if (isProfile) {
+          if (input.queryString) return result(400, { error: 'Invalid clinic profile query' });
+          const access = await auth.getProfileAccess(clinicSlug);
+          const canEdit = (access ? new Set(access.editRoles) : DEFAULT_PROFILE_EDIT_ROLES).has(member.role);
+          const current = await currentProfile(store, clinic);
+          const shown = (profile: ClinicProfile) => ({ profile: profileForClient(profile), canEdit });
+          if (input.method === 'GET' && endpoint === 'profile') return result(200, shown(current));
+          if (input.method === 'GET' && endpoint === 'profile/logo') {
+            if (!current.logo) return result(404, { error: 'Clinic logo not found' });
+            if (!logos) return result(503, { error: 'Clinic logo unavailable' });
+            const image = await logos.get(clinicSlug, current.logo);
+            return binaryImage(image.bytes, image.contentType);
+          }
+          if (!canEdit) return result(403, { error: 'Profile edit denied' });
+          if (input.method === 'POST' && endpoint === 'profile/logo/prepare') {
+            const request = body(input, 512);
+            if (!request || !hasOnly(request, ['expectedRevision', 'contentType']) ||
+                !profileRevision(request.expectedRevision) ||
+                (request.contentType !== 'image/png' && request.contentType !== 'image/jpeg')) {
+              return result(400, { error: 'Invalid clinic logo request' });
+            }
+            if (current.revision !== request.expectedRevision) return result(409, { error: 'Clinic profile changed; reload' });
+            if (!logos) return result(503, { error: 'Clinic logo unavailable' });
+            return result(200, await logos.preparePending(clinicSlug, request.contentType));
+          }
+          if (input.method === 'POST' && endpoint === 'profile/logo/complete') {
+            const request = body(input, 512);
+            if (!request || !hasOnly(request, ['expectedRevision', 'contentType', 'uploadId']) ||
+                !profileRevision(request.expectedRevision) ||
+                (request.contentType !== 'image/png' && request.contentType !== 'image/jpeg') ||
+                typeof request.uploadId !== 'string' ||
+                !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(request.uploadId)) {
+              return result(400, { error: 'Invalid clinic logo request' });
+            }
+            if (current.revision !== request.expectedRevision) return result(409, { error: 'Clinic profile changed; reload' });
+            if (!logos) return result(503, { error: 'Clinic logo unavailable' });
+            const contentType = request.contentType;
+            const bytes = await logos.readPending(clinicSlug, request.uploadId, contentType);
+            const upload = bytes && await parseLogoBytes(contentType, bytes);
+            if (!upload) return result(400, { error: 'Invalid or expired clinic logo upload' });
+            const key = await logos.put(clinicSlug, upload);
+            let saved: boolean;
+            try {
+              const next: ClinicProfile = { ...current, revision: current.revision + 1,
+                logo: { key, contentType: upload.contentType, sha256: upload.sha256 } };
+              saved = await store.saveClinicProfile(clinicSlug, next, current.revision,
+                member.sub, now().toISOString(), 'profile.logo_added');
+              if (saved) {
+                await logos.removePending(clinicSlug, request.uploadId, contentType).catch(() => undefined);
+                return result(200, shown(next));
+              }
+            } catch (error) {
+              await logos.removeStaged(key).catch(() => undefined);
+              throw error;
+            }
+            await logos.removeStaged(key).catch(() => undefined);
+            return result(409, { error: 'Clinic profile changed; reload' });
+          }
+          if (input.method === 'PUT' && endpoint === 'profile') {
+            const request = body(input, 4096);
+            if (!request || !hasOnly(request, ['expectedRevision', 'displayName', 'address', 'phone', 'email']) ||
+                !profileRevision(request.expectedRevision)) return result(400, { error: 'Invalid clinic profile' });
+            const fields = profileFields(request);
+            if (!fields) return result(400, { error: 'Invalid clinic profile' });
+            if (current.revision !== request.expectedRevision) return result(409, { error: 'Clinic profile changed; reload' });
+            const next = { ...current, ...fields, revision: current.revision + 1 };
+            const saved = await store.saveClinicProfile(clinicSlug, next, current.revision,
+              member.sub, now().toISOString(), 'profile.updated');
+            return saved ? result(200, shown(next)) : result(409, { error: 'Clinic profile changed; reload' });
+          }
+          if (input.method === 'POST' && endpoint === 'profile/logo') {
+            const request = body(input, 4_100_000);
+            if (!request || !hasOnly(request, ['expectedRevision', 'contentType', 'dataBase64']) ||
+                !profileRevision(request.expectedRevision)) return result(400, { error: 'Invalid clinic logo' });
+            if (current.revision !== request.expectedRevision) return result(409, { error: 'Clinic profile changed; reload' });
+            if (!logos) return result(503, { error: 'Clinic logo unavailable' });
+            const upload = await parseLogoUpload(request.contentType, request.dataBase64);
+            if (!upload) return result(400, { error: 'Invalid clinic logo' });
+            const key = await logos.put(clinicSlug, upload);
+            let saved: boolean;
+            try {
+              const next: ClinicProfile = { ...current, revision: current.revision + 1,
+                logo: { key, contentType: upload.contentType, sha256: upload.sha256 } };
+              saved = await store.saveClinicProfile(clinicSlug, next, current.revision,
+                member.sub, now().toISOString(), 'profile.logo_added');
+              if (saved) return result(200, shown(next));
+            } catch (error) {
+              await logos.removeStaged(key).catch(() => undefined);
+              throw error;
+            }
+            await logos.removeStaged(key).catch(() => undefined);
+            return result(409, { error: 'Clinic profile changed; reload' });
+          }
+          if (input.method === 'DELETE' && endpoint === 'profile/logo') {
+            const request = body(input, 1024);
+            if (!request || !hasOnly(request, ['expectedRevision']) ||
+                !profileRevision(request.expectedRevision)) return result(400, { error: 'Invalid clinic logo change' });
+            if (current.revision !== request.expectedRevision) return result(409, { error: 'Clinic profile changed; reload' });
+            if (!current.logo) return result(409, { error: 'Clinic logo already absent' });
+            const next: ClinicProfile = { ...current, revision: current.revision + 1, logo: null };
+            const saved = await store.saveClinicProfile(clinicSlug, next, current.revision,
+              member.sub, now().toISOString(), 'profile.logo_removed');
+            return saved ? result(200, shown(next)) : result(409, { error: 'Clinic profile changed; reload' });
+          }
           return result(404, { error: 'Not found' });
         }
 
@@ -530,9 +678,10 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
             return result(400, { error: 'Invalid prescription request' });
           }
           const found = await resolveFinalizedPrescription(store, clinicSlug, request.appointmentId, request.clinicDate);
-          return found ? result(200, { status: 'finalized',
-            printablePrescription: printablePrescription(found.encounter, clinic, found.patient) }) :
-            result(404, { error: 'Prescription not found' });
+          if (!found) return result(404, { error: 'Prescription not found' });
+          const profile = await currentProfile(store, clinic);
+          return result(200, { status: 'finalized',
+            printablePrescription: printablePrescription(found.encounter, profile, found.patient) });
         }
         if (input.method === 'POST' && isPrescriptionEmail && !(input.queryString ?? '')) {
           const preview = endpoint.endsWith('/preview');
@@ -559,10 +708,15 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
           }
           const recipientMasked = maskEmail(recipient);
           if (preview) return result(200, { status: 'ready', recipientEmail: recipient, recipientMasked });
-          const prescription = printablePrescription(found.encounter, clinic, found.patient);
+          const profile = await currentProfile(store, clinic);
+          const prescription = printablePrescription(found.encounter, profile, found.patient);
           if (!prescription) return result(404, { error: 'Prescription not found' });
           let pdf: Uint8Array;
-          try { pdf = await renderPrescriptionPdf(prescription); }
+          try {
+            const logo = profile.logo ? await logos?.get(clinicSlug, profile.logo) : undefined;
+            if (profile.logo && !logo) return result(503, { error: 'Clinic logo unavailable' });
+            pdf = await renderPrescriptionPdf(prescription, logo);
+          }
           catch (error) {
             if (error instanceof UnsupportedPrescriptionText) {
               return result(422, { error: 'Prescription cannot be rendered for demo email' });
@@ -739,7 +893,8 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
             updatedAt: null, finalizedAt: null, finalizedBySub: null,
             finalizedByDisplayName: null, finalizedDoctorId: null,
           };
-          if (action === 'read') return result(200, consultationResponse(current, clinic, patient, doctor, member.role));
+          if (action === 'read') return result(200, consultationResponse(current,
+            await currentProfile(store, clinic), patient, doctor, member.role));
           if (typeof request.expectedRevision !== 'number' || !Number.isSafeInteger(request.expectedRevision) ||
               request.expectedRevision < 0 || request.expectedRevision > 1_000_000) {
             return result(400, { error: 'Invalid revision' });
@@ -779,7 +934,8 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
           }
           const saved = await store.saveEncounter(clinicSlug, appointment, next, request.expectedRevision,
             session.sub, auditAction, member.role === 'doctor' ? session.sub : undefined);
-          return saved ? result(200, consultationResponse(next, clinic, patient, doctor, member.role)) :
+          return saved ? result(200, consultationResponse(next,
+            await currentProfile(store, clinic), patient, doctor, member.role)) :
             result(409, { error: 'Encounter changed or finalized' });
         }
         return result(404, { error: 'Not found' });

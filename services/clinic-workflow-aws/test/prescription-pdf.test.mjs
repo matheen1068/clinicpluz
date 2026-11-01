@@ -49,3 +49,23 @@ test('long directions paginate without truncation; unsupported Unicode fails clo
     medications: [{ ...demo.medications[0], timing: { timesOfDay: ['mañana'], mealRelation: 'after' } }] }),
   UnsupportedPrescriptionText);
 });
+
+test('server PDF renders current clinic contact details and a validated private logo', async () => {
+  const bytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9wYpaJ8AAAAASUVORK5CYII=', 'base64');
+  const document = { ...demo, clinic: { ...demo.clinic, address: '123 Demo Road',
+    phone: '+91 98765 43210', email: 'hello@goodwell.example',
+    logoUrl: '/api/workflow/clinics/goodwell/profile/logo' } };
+  const pdfBytes = await renderPrescriptionPdf(document, { bytes, contentType: 'image/png' });
+  const pdf = await PDFDocument.load(pdfBytes);
+  const operators = pageTextOperators(pdf);
+  for (const phrase of ['Address: 123 Demo Road', 'Phone: +91 98765 43210',
+    'Email: hello@goodwell.example']) {
+    assert.ok(operators.includes(Buffer.from(phrase).toString('hex').toUpperCase()), phrase);
+  }
+  assert.match(operators, /\/Image-[^\s]+ Do/);
+  await assert.rejects(() => renderPrescriptionPdf(document,
+    { bytes: Buffer.from('not an image'), contentType: 'image/png' }), UnsupportedPrescriptionText);
+  await assert.rejects(() => renderPrescriptionPdf({ ...document,
+    clinic: { ...document.clinic, address: 'अमान' } },
+  { bytes, contentType: 'image/png' }), UnsupportedPrescriptionText);
+});

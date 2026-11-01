@@ -10,6 +10,7 @@ import type {
 import type { Encounter } from './consultation.js';
 import { historyIdFor, type HistoryEntry } from './history.js';
 import { randomUUID } from 'node:crypto';
+import type { ClinicProfile, LogoContentType } from './profile.js';
 
 type Item = Record<string, AttributeValue>;
 const s = (value: string): AttributeValue => ({ S: value });
@@ -102,6 +103,23 @@ function historyEntry(item: Item, slug: string, patientId: string): HistoryEntry
     clinicDate: string(item, 'clinicDate'), visitAt, visitUtc, finalizedAt, status: 'finalized',
     doctor: { id: string(item, 'finalizedDoctorId'), displayName } };
 }
+function clinicProfile(item: Item, slug: string): ClinicProfile {
+  if (string(item, 'clinicSlug') !== slug || string(item, 'pk') !== `CLINIC#${slug}#CONFIG` ||
+      string(item, 'sk') !== 'PROFILE') throw new Error('Clinic profile key mismatch');
+  const revision = integer(item, 'revision');
+  if (revision < 1) throw new Error('Invalid clinic profile revision');
+  const logoKey = maybeString(item, 'logoKey');
+  const logoContentType = maybeString(item, 'logoContentType');
+  const logoSha256 = maybeString(item, 'logoSha256');
+  if (Boolean(logoKey) !== Boolean(logoContentType) || Boolean(logoKey) !== Boolean(logoSha256) ||
+      logoContentType && logoContentType !== 'image/png' && logoContentType !== 'image/jpeg' ||
+      logoSha256 && !/^[0-9a-f]{64}$/.test(logoSha256)) throw new Error('Invalid clinic logo metadata');
+  return { slug, displayName: string(item, 'displayName'),
+    address: maybeString(item, 'address'), phone: maybeString(item, 'phone'),
+    email: maybeString(item, 'email'), revision,
+    logo: logoKey ? { key: logoKey, contentType: logoContentType as LogoContentType,
+      sha256: logoSha256! } : null };
+}
 
 export class DynamoAuthStore implements AuthStore {
   constructor(private readonly client: DynamoDBClient, private readonly table: string) {}
@@ -142,6 +160,19 @@ export class DynamoAuthStore implements AuthStore {
       appointments: bool(map, 'appointments'), consultations: optionalBool(map, 'consultations'),
       billing: optionalBool(map, 'billing') };
   }
+  async getProfileAccess(slug: string): Promise<{ editRoles: Role[]; version: number } | null> {
+    const item = await this.get(`CLINIC#${slug}`, 'PROFILE_ACCESS');
+    if (!item) return null;
+    const list = (item.editRoles as { L?: AttributeValue[] } | undefined)?.L;
+    if (!list || list.length > roles.size) throw new Error('Invalid profile access');
+    const editRoles = list.map((value) => (value as { S?: string }).S as Role);
+    if (editRoles.some((role) => !role || !roles.has(role)) || new Set(editRoles).size !== editRoles.length) {
+      throw new Error('Invalid profile access roles');
+    }
+    const version = integer(item, 'version');
+    if (version < 1) throw new Error('Invalid profile access version');
+    return { editRoles, version };
+  }
 }
 
 export class CognitoStaffStatus implements StaffIdentity {
@@ -175,6 +206,47 @@ export class DynamoWorkflowStore implements WorkflowStore {
     }));
     if (response.LastEvaluatedKey || (response.Items?.length ?? 0) > max) throw new Error('Result limit exceeded');
     return response.Items ?? [];
+  }
+  async getClinicProfile(slug: string): Promise<ClinicProfile | null> {
+    const item = await this.get(`CLINIC#${slug}#CONFIG`, 'PROFILE');
+    return item ? clinicProfile(item, slug) : null;
+  }
+  async saveClinicProfile(slug: string, profile: ClinicProfile, expectedRevision: number,
+    actorSub: string, at: string, action: 'profile.updated' | 'profile.logo_added' | 'profile.logo_removed'):
+    Promise<boolean> {
+    if (profile.slug !== slug || profile.revision !== expectedRevision + 1) throw new Error('Invalid profile revision');
+    const item: Item = { pk: s(`CLINIC#${slug}#CONFIG`), sk: s('PROFILE'),
+      clinicSlug: s(slug), displayName: s(profile.displayName),
+      address: profile.address ? s(profile.address) : { NULL: true },
+      phone: profile.phone ? s(profile.phone) : { NULL: true },
+      email: profile.email ? s(profile.email) : { NULL: true },
+      logoKey: profile.logo ? s(profile.logo.key) : { NULL: true },
+      logoContentType: profile.logo ? s(profile.logo.contentType) : { NULL: true },
+      logoSha256: profile.logo ? s(profile.logo.sha256) : { NULL: true },
+      revision: n(profile.revision), updatedAt: s(at), updatedBySub: s(actorSub) };
+    try {
+      await this.client.send(new TransactWriteItemsCommand({ TransactItems: [
+        { Put: { TableName: this.table, Item: item,
+          ConditionExpression: expectedRevision === 0 ? 'attribute_not_exists(pk)' :
+            '#revision = :expected AND #clinicSlug = :slug',
+          ...(expectedRevision === 0 ? {} : {
+            ExpressionAttributeNames: { '#revision': 'revision', '#clinicSlug': 'clinicSlug' },
+            ExpressionAttributeValues: { ':expected': n(expectedRevision), ':slug': s(slug) },
+          }) } },
+        { Put: { TableName: this.table, Item: {
+          pk: s(`CLINIC#${slug}#AUDIT`), sk: s(`${at}#${randomUUID()}`),
+          action: s(action), actorSub: s(actorSub), at: s(at), targetId: s('PROFILE'),
+          revision: n(profile.revision),
+        }, ConditionExpression: 'attribute_not_exists(pk)' } },
+      ] }));
+      return true;
+    } catch (error) {
+      if (error instanceof Error && error.name === 'TransactionCanceledException') {
+        const reasons = (error as Error & { CancellationReasons?: Array<{ Code?: string }> }).CancellationReasons;
+        if (reasons?.some((reason) => reason.Code === 'ConditionalCheckFailed')) return false;
+      }
+      throw error;
+    }
   }
   async getSchedule(slug: string): Promise<Schedule | null> {
     const item = await this.get(`CLINIC#${slug}#CONFIG`, 'SCHEDULE');

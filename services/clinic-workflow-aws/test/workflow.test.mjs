@@ -13,6 +13,7 @@ const DOCTOR_COOKIE = 'd'.repeat(43);
 const OTHER_DOCTOR_COOKIE = 'o'.repeat(43);
 const NURSE_COOKIE = 'n'.repeat(43);
 const PHARMACIST_COOKIE = 'p'.repeat(43);
+const ADMIN_COOKIE = 'a'.repeat(43);
 const CSRF = 'csrf-token-for-synthetic-staging';
 const NOW = new Date('2026-10-09T10:00:00Z');
 const ROOT = '/api/workflow/clinics';
@@ -50,6 +51,9 @@ function setup(options = {}) {
   }], [createHash('sha256').update(PHARMACIST_COOKIE).digest('hex'), {
     clinicSlug: 'goodwell', username: 'pharmacist', sub: 'pharmacist-sub-1', csrfToken: CSRF,
     expiresAt: Math.floor(NOW.getTime() / 1000) + 3600,
+  }], [createHash('sha256').update(ADMIN_COOKIE).digest('hex'), {
+    clinicSlug: 'goodwell', username: 'admin', sub: 'admin-sub-1', csrfToken: CSRF,
+    expiresAt: Math.floor(NOW.getTime() / 1000) + 3600,
   }]]);
   const clinics = new Map([
     ['goodwell', { slug: 'goodwell', displayName: 'Goodwell Demo Clinic', active: true }],
@@ -66,6 +70,8 @@ function setup(options = {}) {
       sub: 'nurse-sub-1', displayName: 'Demo Nurse', role: 'nurse', active: true }],
     ['goodwell/pharmacist', { clinicSlug: 'goodwell', username: 'pharmacist', cognitoUsername: 'internal-pharmacist',
       sub: 'pharmacist-sub-1', displayName: 'Demo Pharmacist', role: 'pharmacist', active: true }],
+    ['goodwell/admin', { clinicSlug: 'goodwell', username: 'admin', cognitoUsername: 'internal-admin',
+      sub: 'admin-sub-1', displayName: 'Demo Admin', role: 'clinic_admin', active: true }],
   ]);
   const modules = new Map([
     ['goodwell', { clinicSlug: 'goodwell', patient_intake: true, appointments: true, consultations: true }],
@@ -76,6 +82,7 @@ function setup(options = {}) {
     async getClinic(slug) { return clinics.get(slug) ?? null; },
     async getMembership(slug, username) { return members.get(`${slug}/${username}`) ?? null; },
     async getEntitlements(slug) { return modules.get(slug) ?? null; },
+    async getProfileAccess(slug) { return profileAccess.get(slug) ?? null; },
   };
   let cognitoActive = true;
   const identity = { async isActive() { return cognitoActive; } };
@@ -103,7 +110,40 @@ function setup(options = {}) {
   const deliveries = new Map();
   const occupied = new Set();
   const audit = [];
+  const profiles = new Map();
+  const profileAccess = new Map();
+  const logoObjects = new Map();
+  const pendingLogoObjects = new Map();
+  let logoSequence = 0;
+  const logos = {
+    async preparePending(slug, contentType) {
+      const uploadId = `00000000-0000-4000-8000-${String(++logoSequence).padStart(12, '0')}`;
+      return { uploadId, url: 'https://private-upload.s3.ap-south-1.amazonaws.com/',
+        fields: { key: `staged/${slug}/${uploadId}.${contentType === 'image/png' ? 'png' : 'jpg'}` } };
+    },
+    async readPending(slug, uploadId) { return pendingLogoObjects.get(`${slug}/${uploadId}`) ?? null; },
+    async removePending(slug, uploadId) { pendingLogoObjects.delete(`${slug}/${uploadId}`); },
+    async put(slug, upload) {
+      const key = `clinics/${slug}/test-${++logoSequence}.png`;
+      logoObjects.set(key, { bytes: upload.bytes, contentType: upload.contentType });
+      return key;
+    },
+    async get(slug, logo) {
+      if (!logo.key.startsWith(`clinics/${slug}/`)) throw new Error('Wrong clinic logo');
+      const object = logoObjects.get(logo.key);
+      if (!object) throw new Error('Logo missing');
+      return object;
+    },
+    async removeStaged(key) { logoObjects.delete(key); },
+  };
   const store = {
+    async getClinicProfile(slug) { return profiles.get(slug) ?? null; },
+    async saveClinicProfile(slug, profile, expectedRevision, actorSub, at, action) {
+      if ((profiles.get(slug)?.revision ?? 0) !== expectedRevision) return false;
+      profiles.set(slug, profile);
+      audit.push({ slug, actorSub, at, action, revision: profile.revision });
+      return true;
+    },
     async getSchedule(slug) { return schedules.get(slug) ?? null; },
     async listDoctors(slug) { return doctors.get(slug) ?? []; },
     async listMedicines(slug) { return medicines.get(slug) ?? []; },
@@ -195,20 +235,23 @@ function setup(options = {}) {
     },
   };
   const app = createWorkflowApp(auth, identity, store, { publicOrigin: ORIGIN, edgeKey: EDGE_KEY,
-    now: () => NOW, ...(options.prescriptionEmail ? { prescriptionEmail: options.prescriptionEmail } : {}) });
+    now: () => NOW, ...(options.prescriptionEmail ? { prescriptionEmail: options.prescriptionEmail } : {}) },
+  undefined, logos);
   async function call(method, path, payload, options = {}) {
     const response = await app.handle({
       method, path, queryString: options.queryString ?? '',
       headers: { 'x-clinicpluz-edge-key': EDGE_KEY,
-        ...(method === 'POST' ? { origin: ORIGIN, 'x-csrf-token': CSRF, 'content-type': 'application/json' } : {}),
+        ...(method !== 'GET' ? { origin: ORIGIN, 'x-csrf-token': CSRF, 'content-type': 'application/json' } : {}),
         ...options.headers },
       cookies: options.cookies ?? [`__Host-cpz_session=${COOKIE}`],
       ...(payload === undefined ? {} : { body: JSON.stringify(payload) }),
     });
-    return { status: response.statusCode, body: JSON.parse(response.body), headers: response.headers };
+    return { status: response.statusCode, body: response.isBase64Encoded ?
+      Buffer.from(response.body, 'base64') : JSON.parse(response.body), headers: response.headers };
   }
   return { call, auth, store, sessions, clinics, members, modules, schedules, doctors, medicines, patients, appointments, encounters, history, deliveries,
-    audit, setCognitoActive: (value) => { cognitoActive = value; } };
+    audit, profiles, profileAccess, logoObjects, pendingLogoObjects,
+    setCognitoActive: (value) => { cognitoActive = value; } };
 }
 const patient = { fullName: 'Amina Khan', phone: '+91 98765 43210', ageYears: 38, sex: 'female', email: 'amina@example.test' };
 const consultationBase = `${ROOT}/goodwell/consultations`;
@@ -220,6 +263,130 @@ const note = { chiefComplaint: 'Synthetic complaint', history: '', exam: 'Synthe
   assessment: 'Clinician-entered assessment', plan: 'Clinician-entered plan' };
 const medications = [{ name: 'Demo Medicine', strength: '10 mg', dose: '1 tablet', route: 'oral',
   frequency: 'once daily', duration: '3 days', instructions: 'After food' }];
+const profileRoot = `${ROOT}/goodwell/profile`;
+const demoLogo = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9wYpaJ8AAAAASUVORK5CYII=';
+const profileFields = { displayName: 'Goodwell New Clinic', address: '123 Demo Road',
+  phone: '+91 98765 43210', email: 'hello@goodwell.example' };
+
+test('clinic profile is branch-scoped and editable only by configured staff roles with CSRF and revisions', async () => {
+  const world = setup();
+  const initial = await world.call('GET', profileRoot);
+  assert.equal(initial.status, 200);
+  assert.deepEqual(initial.body, { profile: { slug: 'goodwell', displayName: 'Goodwell Demo Clinic',
+    address: null, phone: null, email: null, revision: 0, logo: null }, canEdit: true });
+  assert.equal((await world.call('GET', profileRoot, undefined, nurseSession)).body.canEdit, false);
+  assert.equal((await world.call('PUT', profileRoot, { expectedRevision: 0, ...profileFields }, nurseSession)).status, 403);
+  assert.equal((await world.call('PUT', profileRoot, { expectedRevision: 0, ...profileFields },
+    { headers: { 'x-csrf-token': 'wrong' } })).status, 403);
+  assert.equal((await world.call('PUT', profileRoot, { expectedRevision: 0, ...profileFields },
+    { headers: { origin: 'https://other.example' } })).status, 403);
+  assert.equal((await world.call('PUT', `${ROOT}/blesswell/profile`, { expectedRevision: 0, ...profileFields })).status, 403);
+  const saved = await world.call('PUT', profileRoot, { expectedRevision: 0, ...profileFields });
+  assert.equal(saved.status, 200);
+  assert.equal(saved.body.profile.revision, 1);
+  assert.equal(saved.body.profile.email, 'hello@goodwell.example');
+  assert.equal((await world.call('PUT', profileRoot, { expectedRevision: 0, ...profileFields }, doctorSession)).status, 409);
+  assert.equal((await world.call('PUT', profileRoot, { expectedRevision: 1,
+    ...profileFields, displayName: 'Doctor Updated Clinic' }, doctorSession)).status, 200);
+  assert.equal((await world.call('PUT', profileRoot, { expectedRevision: 2,
+    ...profileFields, displayName: 'Admin Updated Clinic' },
+    { cookies: [`__Host-cpz_session=${ADMIN_COOKIE}`] })).status, 200);
+  assert.deepEqual(world.audit.filter((entry) => entry.action === 'profile.updated')
+    .map((entry) => entry.revision), [1, 2, 3]);
+  assert.equal(JSON.stringify(world.audit).includes('123 Demo Road'), false);
+  assert.equal((await world.call('PUT', profileRoot, { expectedRevision: 3,
+    ...profileFields, phone: '123' })).status, 400);
+  assert.equal((await world.call('PUT', profileRoot, { expectedRevision: 3,
+    ...profileFields, email: 'bad address' })).status, 400);
+  assert.equal((await world.call('PUT', profileRoot, { expectedRevision: 3,
+    ...profileFields, address: '<script>' })).status, 400);
+  world.profileAccess.set('goodwell', { editRoles: ['nurse'], version: 2 });
+  assert.equal((await world.call('GET', profileRoot)).body.canEdit, false);
+  assert.equal((await world.call('PUT', profileRoot, { expectedRevision: 3, ...profileFields })).status, 403);
+  assert.equal((await world.call('PUT', profileRoot, { expectedRevision: 3, ...profileFields }, nurseSession)).status, 200);
+  world.profileAccess.set('goodwell', { editRoles: [], version: 3 });
+  assert.equal((await world.call('PUT', profileRoot, { expectedRevision: 4, ...profileFields }, nurseSession)).status, 403);
+  world.modules.delete('goodwell');
+  assert.equal((await world.call('GET', profileRoot)).status, 200);
+});
+
+test('logo upload is validated, private, revision-guarded and removable without exposing S3 keys', async () => {
+  const world = setup();
+  const upload = { expectedRevision: 0, contentType: 'image/png', dataBase64: demoLogo };
+  assert.equal((await world.call('POST', `${profileRoot}/logo`,
+    { ...upload, contentType: 'image/svg+xml' })).status, 400);
+  assert.equal((await world.call('POST', `${profileRoot}/logo`,
+    { ...upload, dataBase64: Buffer.from('<svg/>').toString('base64') })).status, 400);
+  assert.equal((await world.call('POST', `${profileRoot}/logo`, upload, pharmacistSession)).status, 403);
+  const added = await world.call('POST', `${profileRoot}/logo`, upload);
+  assert.equal(added.status, 200);
+  assert.deepEqual(added.body.profile.logo, { url: `${profileRoot}/logo`, contentType: 'image/png' });
+  assert.equal(added.body.profile.revision, 1);
+  assert.equal(JSON.stringify(added.body).includes('test-1.png'), false);
+  const image = await world.call('GET', `${profileRoot}/logo`, undefined, nurseSession);
+  assert.equal(image.status, 200);
+  assert.equal(image.headers['content-type'], 'image/png');
+  assert.equal(image.headers['cache-control'], 'no-store');
+  assert.deepEqual(image.body, Buffer.from(demoLogo, 'base64'));
+  assert.equal((await world.call('POST', `${profileRoot}/logo`, upload)).status, 409);
+  assert.equal((await world.call('DELETE', `${profileRoot}/logo`, { expectedRevision: 0 })).status, 409);
+  const removed = await world.call('DELETE', `${profileRoot}/logo`, { expectedRevision: 1 }, doctorSession);
+  assert.equal(removed.status, 200);
+  assert.equal(removed.body.profile.logo, null);
+  assert.equal((await world.call('GET', `${profileRoot}/logo`)).status, 404);
+  assert.deepEqual(world.audit.filter((entry) => entry.action.startsWith('profile.logo_'))
+    .map((entry) => entry.action), ['profile.logo_added', 'profile.logo_removed']);
+});
+
+test('direct logo upload starts with a small authenticated request and commits only validated staged bytes', async () => {
+  const world = setup();
+  const preparePath = `${profileRoot}/logo/prepare`;
+  const completePath = `${profileRoot}/logo/complete`;
+  const start = { expectedRevision: 0, contentType: 'image/png' };
+  assert.equal((await world.call('POST', preparePath, start, pharmacistSession)).status, 403);
+  assert.equal((await world.call('POST', preparePath, { ...start, contentType: 'image/svg+xml' })).status, 400);
+  const prepared = await world.call('POST', preparePath, start);
+  assert.equal(prepared.status, 200);
+  assert.match(prepared.body.uploadId, /^[0-9a-f-]{36}$/);
+  assert.equal(world.profiles.size, 0);
+  const finish = { ...start, uploadId: prepared.body.uploadId };
+  assert.equal((await world.call('POST', completePath, finish)).status, 400);
+  world.pendingLogoObjects.set(`goodwell/${finish.uploadId}`, Buffer.from('<svg/>'));
+  assert.equal((await world.call('POST', completePath, finish)).status, 400);
+  world.pendingLogoObjects.set(`goodwell/${finish.uploadId}`, Buffer.from(demoLogo, 'base64'));
+  assert.equal((await world.call('POST', completePath, { ...finish, expectedRevision: 1 })).status, 409);
+  const committed = await world.call('POST', completePath, finish);
+  assert.equal(committed.status, 200);
+  assert.equal(committed.body.profile.revision, 1);
+  assert.deepEqual(committed.body.profile.logo, { url: `${profileRoot}/logo`, contentType: 'image/png' });
+  assert.equal(world.pendingLogoObjects.size, 0);
+  assert.equal((await world.call('POST', completePath, finish)).status, 409);
+  assert.deepEqual(world.audit.filter((entry) => entry.action === 'profile.logo_added').length, 1);
+});
+
+test('authorized prescription reads use current server-owned clinic identity while clinician remains frozen', async () => {
+  const world = setup();
+  assert.equal((await world.call('PUT', profileRoot, { expectedRevision: 0, ...profileFields })).status, 200);
+  assert.equal((await world.call('POST', `${profileRoot}/logo`,
+    { expectedRevision: 1, contentType: 'image/png', dataBase64: demoLogo })).status, 200);
+  const selected = await seedAppointment(world);
+  const finalized = await finalizeFor(world, selected);
+  assert.deepEqual(finalized.body.printablePrescription.clinic,
+    { slug: 'goodwell', displayName: profileFields.displayName, address: profileFields.address,
+      phone: profileFields.phone, email: profileFields.email, logoUrl: `${profileRoot}/logo` });
+  assert.equal(finalized.body.encounter.clinic.displayName, profileFields.displayName);
+  const doctorName = finalized.body.printablePrescription.doctor.displayName;
+  assert.equal((await world.call('PUT', profileRoot, { expectedRevision: 2,
+    ...profileFields, displayName: 'Goodwell Renamed Clinic' })).status, 200);
+  const doctorRead = await world.call('POST', `${consultationBase}/read`, selected, doctorSession);
+  assert.equal(doctorRead.status, 200);
+  assert.equal(doctorRead.body.encounter.clinic.displayName, 'Goodwell Renamed Clinic');
+  assert.equal(doctorRead.body.printablePrescription.clinic.displayName, 'Goodwell Renamed Clinic');
+  assert.equal(doctorRead.body.printablePrescription.doctor.displayName, doctorName);
+  const receptionRead = await world.call('POST', `${consultationBase}/prescriptions/read`, selected);
+  assert.equal(receptionRead.body.printablePrescription.clinic.logoUrl, `${profileRoot}/logo`);
+  assert.equal(receptionRead.body.printablePrescription.clinic.displayName, 'Goodwell Renamed Clinic');
+});
 
 async function seedAppointment(world, doctorId = 'd1') {
   const registered = await world.call('POST', `${ROOT}/goodwell/patients`, patient);

@@ -2,7 +2,8 @@ import { PDFDocument, StandardFonts } from 'pdf-lib';
 import type { Medication } from './consultation.ts';
 
 export interface PrescriptionDocument {
-  clinic: { slug: string; displayName: string };
+  clinic: { slug: string; displayName: string; address?: string | null; phone?: string | null;
+    email?: string | null; logoUrl?: string | null };
   doctor: { id: string; displayName: string };
   patient: { id: string; fullName: string; ageYears: number; sex: string };
   appointmentDate: string;
@@ -23,7 +24,8 @@ function printable(value: string): string {
   return value;
 }
 
-export async function renderPrescriptionPdf(document: PrescriptionDocument): Promise<Uint8Array> {
+export async function renderPrescriptionPdf(document: PrescriptionDocument,
+  logo?: { bytes: Uint8Array; contentType: 'image/png' | 'image/jpeg' }): Promise<Uint8Array> {
   if (document.medications.length < 1 || document.medications.length > 20) {
     throw new UnsupportedPrescriptionText('Unsupported demo PDF content');
   }
@@ -31,6 +33,9 @@ export async function renderPrescriptionPdf(document: PrescriptionDocument): Pro
     'CLINICPLUZ SYNTHETIC DEMO - NOT FOR CLINICAL USE',
     '',
     `Clinic: ${printable(document.clinic.displayName)}`,
+    ...(document.clinic.address ? [`Address: ${printable(document.clinic.address)}`] : []),
+    ...(document.clinic.phone ? [`Phone: ${printable(document.clinic.phone)}`] : []),
+    ...(document.clinic.email ? [`Email: ${printable(document.clinic.email)}`] : []),
     `Patient: ${printable(document.patient.fullName)} (ID: ${printable(document.patient.id)})`,
     `Age at registration: ${document.patient.ageYears}; Sex: ${printable(document.patient.sex)}`,
     `Doctor: ${printable(document.doctor.displayName)} (ID: ${printable(document.doctor.id)})`,
@@ -68,11 +73,27 @@ export async function renderPrescriptionPdf(document: PrescriptionDocument): Pro
   pdf.setTitle('ClinicPluz synthetic demo prescription');
   pdf.setCreator('ClinicPluz synthetic staging');
   const font = await pdf.embedFont(StandardFonts.Courier);
+  let page = pdf.addPage([595, 842]);
+  let logoImage: Awaited<ReturnType<typeof pdf.embedPng>> | undefined;
+  if (logo) {
+    try {
+      logoImage = logo.contentType === 'image/png' ? await pdf.embedPng(logo.bytes) :
+        await pdf.embedJpg(logo.bytes);
+      if (logoImage.width < 1 || logoImage.width > 2048 ||
+          logoImage.height < 1 || logoImage.height > 2048) {
+        throw new UnsupportedPrescriptionText('Invalid demo clinic logo');
+      }
+      const scale = Math.min(72 / logoImage.width, 72 / logoImage.height);
+      page.drawImage(logoImage, { x: 42, y: 705,
+        width: logoImage.width * scale, height: logoImage.height * scale });
+    } catch {
+      throw new UnsupportedPrescriptionText('Invalid demo clinic logo');
+    }
+  }
   const wrapped = lines.flatMap((line) => line.replace(/\r\n?/g, '\n').split('\n')
     .flatMap((part) => part.length ? part.match(/.{1,78}/g) ?? [''] : ['']));
   if (wrapped.length > 720) throw new UnsupportedPrescriptionText('Demo PDF too long');
-  let page = pdf.addPage([595, 842]);
-  let y = 800;
+  let y = logoImage ? 680 : 800;
   for (const line of wrapped) {
     if (y < 42) {
       page = pdf.addPage([595, 842]);

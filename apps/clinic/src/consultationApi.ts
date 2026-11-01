@@ -54,8 +54,14 @@ export interface MedicineCatalogItem { id: string; name: string; strength: strin
 export interface PersonIdentity { id: string; fullName: string; ageYears: number; sex: string }
 export interface DoctorIdentity { id: string; displayName: string }
 export interface ClinicIdentity { slug: string; displayName: string }
+export interface PrintableClinicIdentity extends ClinicIdentity {
+  address: string | null;
+  phone: string | null;
+  email: string | null;
+  logoUrl: string | null;
+}
 export interface PrintablePrescription {
-  clinic: ClinicIdentity;
+  clinic: PrintableClinicIdentity;
   patient: PersonIdentity;
   doctor: DoctorIdentity;
   appointmentDate: string;
@@ -168,6 +174,24 @@ function parseClinic(value: unknown): ClinicIdentity {
   if (!isRecord(value) || !nonempty(value.slug) || !nonempty(value.displayName)) throw new ConsultationApiError(null, 'Invalid clinic response');
   return value as unknown as ClinicIdentity;
 }
+function parsePrintableClinic(value: unknown): PrintableClinicIdentity {
+  const clinic = parseClinic(value);
+  const fields = value as Record<string, unknown>;
+  const optional = (field: string, max: number): string | null => {
+    const item = fields[field];
+    if (item === null || item === undefined) return null;
+    if (typeof item !== 'string' || item.length > max || !item.trim()) throw new ConsultationApiError(null, 'Invalid prescription clinic details');
+    return item;
+  };
+  const address = optional('address', 300);
+  const phone = optional('phone', 40);
+  const email = optional('email', 254);
+  const logoUrl = optional('logoUrl', 200);
+  if (logoUrl !== null && logoUrl !== `/api/workflow/clinics/${clinic.slug}/profile/logo`) {
+    throw new ConsultationApiError(null, 'Invalid prescription clinic logo');
+  }
+  return { ...clinic, address, phone, email, logoUrl };
+}
 function parseVitals(value: unknown): Vitals | null {
   if (value === null) return null;
   if (!isRecord(value) || !validTime(value.observedAt) || !validTime(value.recordedAt) ||
@@ -187,7 +211,7 @@ export function parsePrintablePrescription(value: unknown): PrintablePrescriptio
     throw new ConsultationApiError(null, 'Invalid prescription response');
   }
   return {
-    clinic: parseClinic(value.clinic), patient: parsePatient(value.patient), doctor: parseDoctor(value.doctor),
+    clinic: parsePrintableClinic(value.clinic), patient: parsePatient(value.patient), doctor: parseDoctor(value.doctor),
     appointmentDate: value.appointmentDate, finalizedAt: value.finalizedAt, medications: value.medications.map(parseMedication),
   };
 }
