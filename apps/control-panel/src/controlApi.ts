@@ -8,6 +8,7 @@ export interface Customer { id: string; displayName: string; createdAt: string; 
 export interface Branch { slug: string; customerId: string; branchName: string; displayName: string; active: boolean; version: number }
 export interface Clinic { slug: string; customerId?: string; branchName?: string; displayName: string; active: boolean; version: number }
 export interface Entitlements { clinicSlug: string; modules: Modules; version: number }
+export interface ProfileAccess { clinicSlug: string; editRoles: Role[]; version: number }
 export interface Staff { clinicSlug: string; username: string; displayName: string; role: Role; active: boolean; version: number }
 export interface Page<T> { items: T[]; nextCursor: string | null }
 export interface BranchDiagnostics {
@@ -62,6 +63,13 @@ function parseEntitlements(value: unknown): Entitlements {
   if (!record(value) || !text(value.clinicSlug, 63) || !integer(value.version) || !record(value.modules) ||
     MODULES.some((name) => typeof (value.modules as Dict)[name] !== 'boolean')) throw invalid();
   return { clinicSlug: value.clinicSlug, version: value.version, modules: Object.fromEntries(MODULES.map((name) => [name, (value.modules as Dict)[name]])) as Modules };
+}
+function parseProfileAccess(value: unknown): ProfileAccess {
+  if (!record(value) || !text(value.clinicSlug, 63) || !nonnegativeInteger(value.version) ||
+      !Array.isArray(value.editRoles) || value.editRoles.length > ROLES.length ||
+      value.editRoles.some((role: unknown) => !ROLES.includes(role as Role)) ||
+      new Set(value.editRoles).size !== value.editRoles.length) throw invalid();
+  return { clinicSlug: value.clinicSlug, editRoles: value.editRoles as Role[], version: value.version };
 }
 function parseStaff(value: unknown): Staff {
   if (!record(value) || !text(value.clinicSlug, 63) || !text(value.username, 128) || !text(value.displayName, 120) ||
@@ -206,6 +214,20 @@ export class ControlApi {
     if (!record(value)) throw invalid();
     return { clinic: parseClinic(value.clinic), entitlements: parseEntitlements(value.entitlements) };
   }
+  async profileAccess(slug: string): Promise<ProfileAccess> {
+    const value = await this.request('GET', `/clinics/${encodeURIComponent(slug)}/profile-access`);
+    if (!record(value)) throw invalid();
+    const result = parseProfileAccess(value.profileAccess);
+    if (result.clinicSlug !== slug) throw invalid();
+    return result;
+  }
+  async setProfileAccess(slug: string, expectedVersion: number, editRoles: Role[]): Promise<ProfileAccess> {
+    const value = await this.request('PUT', `/clinics/${encodeURIComponent(slug)}/profile-access`, { expectedVersion, editRoles });
+    if (!record(value)) throw invalid();
+    const result = parseProfileAccess(value.profileAccess);
+    if (result.clinicSlug !== slug) throw invalid();
+    return result;
+  }
   async staff(slug: string, username: string): Promise<Staff> {
     const value = await this.request('GET', `/clinics/${encodeURIComponent(slug)}/staff/${encodeURIComponent(username)}`);
     if (!record(value)) throw invalid();
@@ -237,3 +259,4 @@ export class ControlApi {
     return parseBranch(value.clinic);
   }
 }
+

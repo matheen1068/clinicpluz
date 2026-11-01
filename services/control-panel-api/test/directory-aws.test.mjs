@@ -39,6 +39,28 @@ const branch = { slug: 'goodwell-north', customerId: CUSTOMER, branchName: 'Nort
   displayName: 'Goodwell North', active: false, version: 1 };
 const entitlements = { clinicSlug: branch.slug,
   modules: Object.fromEntries(MODULES.map((module) => [module, false])), version: 1 };
+
+test('profile access uses clinic-scoped key, conditional version and audit transaction', async () => {
+  const commands = [];
+  const repo = new DynamoControlRepository({ async send(command) {
+    commands.push(command);
+    if (command.constructor.name === 'GetItemCommand') return { Item: {
+      pk: s('CLINIC#goodwell-north'), sk: s('PROFILE_ACCESS'),
+      editRoles: { L: [s('doctor'), s('receptionist')] }, version: n(2),
+    } };
+    return {};
+  } }, TABLE);
+  const access = await repo.getProfileAccess('goodwell-north');
+  assert.deepEqual(access, { clinicSlug: 'goodwell-north', editRoles: ['doctor', 'receptionist'], version: 2 });
+  assert.equal(commands[0].input.Key.pk.S, 'CLINIC#goodwell-north');
+  assert.equal(await repo.replaceProfileAccess({ clinicSlug: 'goodwell-north', editRoles: ['doctor'], version: 3 }, 2,
+    audit('profile-access-1', 'goodwell-north', 'profile_access.replaced')), true);
+  const writes = commands[1].input.TransactItems;
+  assert.equal(writes[0].ConditionCheck.Key.sk.S, 'META');
+  assert.equal(writes[1].Update.Key.sk.S, 'PROFILE_ACCESS');
+  assert.equal(writes[1].Update.ExpressionAttributeValues[':expected'].N, '2');
+  assert.equal(writes[2].Put.Item.action.S, 'profile_access.replaced');
+});
 function audit(id, clinicSlug, action) {
   return { id, clinicSlug, actorSub: 'operator-sub', action, target: clinicSlug,
     at: AT, changes: { version: 1 } };
@@ -306,3 +328,4 @@ test('diagnostics query only a bounded branch audit window and project safe fiel
   rows = [];
   assert.deepEqual(await repo.listRecentChanges('goodwell', from, AT), { items: [], hasMore: false });
 });
+

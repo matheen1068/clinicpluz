@@ -169,6 +169,12 @@ Resources:
         GetClinic:
           Type: HttpApi
           Properties: { ApiId: !Ref ControlApi, Path: '/api/control/clinics/{slug}', Method: GET, PayloadFormatVersion: '2.0' }
+        GetProfileAccess:
+          Type: HttpApi
+          Properties: { ApiId: !Ref ControlApi, Path: '/api/control/clinics/{slug}/profile-access', Method: GET, PayloadFormatVersion: '2.0' }
+        PutProfileAccess:
+          Type: HttpApi
+          Properties: { ApiId: !Ref ControlApi, Path: '/api/control/clinics/{slug}/profile-access', Method: PUT, PayloadFormatVersion: '2.0' }
         SetState:
           Type: HttpApi
           Properties: { ApiId: !Ref ControlApi, Path: '/api/control/clinics/{slug}/state', Method: PATCH, PayloadFormatVersion: '2.0' }
@@ -218,3 +224,4 @@ Outputs:
     Value: !Sub https://${OperatorPoolDomain}.auth.${AWS::Region}.amazoncognito.com
   OperatorCallbackUrl:
     Value: !Sub '${PublicOrigin}/control/callback'
+
