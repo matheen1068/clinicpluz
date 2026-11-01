@@ -69,12 +69,10 @@ function jpegDimensions(bytes: Uint8Array): { width: number; height: number } | 
   return null;
 }
 
-export async function parseLogoUpload(contentType: unknown, dataBase64: unknown): Promise<LogoUpload | null> {
-  if (contentType !== 'image/png' && contentType !== 'image/jpeg' ||
-      typeof dataBase64 !== 'string' || dataBase64.length < 32 || dataBase64.length > 4_000_000 ||
-      !/^[A-Za-z0-9+/]+={0,2}$/.test(dataBase64)) return null;
-  const bytes = Buffer.from(dataBase64, 'base64');
-  if (bytes.length < 32 || bytes.length > 3_000_000 || bytes.toString('base64') !== dataBase64) return null;
+export async function parseLogoBytes(contentType: unknown, value: Uint8Array): Promise<LogoUpload | null> {
+  if ((contentType !== 'image/png' && contentType !== 'image/jpeg') ||
+      !(value instanceof Uint8Array) || value.length < 32 || value.length > 3_000_000) return null;
+  const bytes = Buffer.from(value);
   let dimensions: { width: number; height: number } | null = null;
   if (contentType === 'image/png') {
     const signature = Buffer.from('89504e470d0a1a0a', 'hex');
@@ -91,4 +89,12 @@ export async function parseLogoUpload(contentType: unknown, dataBase64: unknown)
     if (embedded.width !== dimensions.width || embedded.height !== dimensions.height) return null;
   } catch { return null; }
   return { bytes, contentType, sha256: createHash('sha256').update(bytes).digest('hex') };
+}
+
+export async function parseLogoUpload(contentType: unknown, dataBase64: unknown): Promise<LogoUpload | null> {
+  if (typeof dataBase64 !== 'string' || dataBase64.length < 32 || dataBase64.length > 4_000_000 ||
+      !/^[A-Za-z0-9+/]+={0,2}$/.test(dataBase64)) return null;
+  const bytes = Buffer.from(dataBase64, 'base64');
+  if (bytes.toString('base64') !== dataBase64) return null;
+  return parseLogoBytes(contentType, bytes);
 }
