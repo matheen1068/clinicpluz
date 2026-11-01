@@ -101,6 +101,36 @@ Resources:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: AES256
 
+  PendingClinicLogoBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      CorsConfiguration:
+        CorsRules:
+          - AllowedMethods: [POST]
+            AllowedOrigins: [!Ref PublicOrigin]
+            AllowedHeaders: ['*']
+            MaxAge: 300
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireUnfinishedLogoUploads
+            Status: Enabled
+            Prefix: staged/
+            ExpirationInDays: 1
+
   WorkflowApi:
     Type: AWS::Serverless::HttpApi
     Properties:
@@ -124,6 +154,7 @@ Resources:
           AUTH_TABLE: !Ref AuthTableName
           CLINICAL_TABLE: !Ref ClinicalTable
           PROFILE_LOGO_BUCKET: !Ref ClinicLogoBucket
+          PENDING_PROFILE_LOGO_BUCKET: !Ref PendingClinicLogoBucket
           STAFF_USER_POOL_ID: !Ref StaffUserPoolId
           PUBLIC_ORIGIN: !Ref PublicOrigin
           EDGE_SECRET_ARN: !Ref WorkflowEdgeSecret
@@ -163,6 +194,9 @@ Resources:
               Action: ['s3:GetObject', 's3:PutObject', 's3:DeleteObject']
               Resource: !Sub '${ClinicLogoBucket.Arn}/clinics/*'
             - Effect: Allow
+              Action: ['s3:GetObject', 's3:PutObject', 's3:DeleteObject']
+              Resource: !Sub '${PendingClinicLogoBucket.Arn}/staged/*'
+            - Effect: Allow
               Action:
                 - secretsmanager:GetSecretValue
               Resource: !Ref WorkflowEdgeSecret
@@ -195,6 +229,12 @@ Resources:
         UploadClinicLogo:
           Type: HttpApi
           Properties: { ApiId: !Ref WorkflowApi, Path: '/api/workflow/clinics/{slug}/profile/logo', Method: POST, PayloadFormatVersion: '2.0' }
+        PrepareClinicLogoUpload:
+          Type: HttpApi
+          Properties: { ApiId: !Ref WorkflowApi, Path: '/api/workflow/clinics/{slug}/profile/logo/prepare', Method: POST, PayloadFormatVersion: '2.0' }
+        CompleteClinicLogoUpload:
+          Type: HttpApi
+          Properties: { ApiId: !Ref WorkflowApi, Path: '/api/workflow/clinics/{slug}/profile/logo/complete', Method: POST, PayloadFormatVersion: '2.0' }
         RemoveClinicLogo:
           Type: HttpApi
           Properties: { ApiId: !Ref WorkflowApi, Path: '/api/workflow/clinics/{slug}/profile/logo', Method: DELETE, PayloadFormatVersion: '2.0' }
