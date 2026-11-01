@@ -113,8 +113,16 @@ function setup(options = {}) {
   const profiles = new Map();
   const profileAccess = new Map();
   const logoObjects = new Map();
+  const pendingLogoObjects = new Map();
   let logoSequence = 0;
   const logos = {
+    async preparePending(slug, contentType) {
+      const uploadId = `00000000-0000-4000-8000-${String(++logoSequence).padStart(12, '0')}`;
+      return { uploadId, url: 'https://private-upload.s3.ap-south-1.amazonaws.com/',
+        fields: { key: `staged/${slug}/${uploadId}.${contentType === 'image/png' ? 'png' : 'jpg'}` } };
+    },
+    async readPending(slug, uploadId) { return pendingLogoObjects.get(`${slug}/${uploadId}`) ?? null; },
+    async removePending(slug, uploadId) { pendingLogoObjects.delete(`${slug}/${uploadId}`); },
     async put(slug, upload) {
       const key = `clinics/${slug}/test-${++logoSequence}.png`;
       logoObjects.set(key, { bytes: upload.bytes, contentType: upload.contentType });
@@ -242,7 +250,8 @@ function setup(options = {}) {
       Buffer.from(response.body, 'base64') : JSON.parse(response.body), headers: response.headers };
   }
   return { call, auth, store, sessions, clinics, members, modules, schedules, doctors, medicines, patients, appointments, encounters, history, deliveries,
-    audit, profiles, profileAccess, logoObjects, setCognitoActive: (value) => { cognitoActive = value; } };
+    audit, profiles, profileAccess, logoObjects, pendingLogoObjects,
+    setCognitoActive: (value) => { cognitoActive = value; } };
 }
 const patient = { fullName: 'Amina Khan', phone: '+91 98765 43210', ageYears: 38, sex: 'female', email: 'amina@example.test' };
 const consultationBase = `${ROOT}/goodwell/consultations`;
@@ -327,6 +336,32 @@ test('logo upload is validated, private, revision-guarded and removable without 
   assert.equal((await world.call('GET', `${profileRoot}/logo`)).status, 404);
   assert.deepEqual(world.audit.filter((entry) => entry.action.startsWith('profile.logo_'))
     .map((entry) => entry.action), ['profile.logo_added', 'profile.logo_removed']);
+});
+
+test('direct logo upload starts with a small authenticated request and commits only validated staged bytes', async () => {
+  const world = setup();
+  const preparePath = `${profileRoot}/logo/prepare`;
+  const completePath = `${profileRoot}/logo/complete`;
+  const start = { expectedRevision: 0, contentType: 'image/png' };
+  assert.equal((await world.call('POST', preparePath, start, pharmacistSession)).status, 403);
+  assert.equal((await world.call('POST', preparePath, { ...start, contentType: 'image/svg+xml' })).status, 400);
+  const prepared = await world.call('POST', preparePath, start);
+  assert.equal(prepared.status, 200);
+  assert.match(prepared.body.uploadId, /^[0-9a-f-]{36}$/);
+  assert.equal(world.profiles.size, 0);
+  const finish = { ...start, uploadId: prepared.body.uploadId };
+  assert.equal((await world.call('POST', completePath, finish)).status, 400);
+  world.pendingLogoObjects.set(`goodwell/${finish.uploadId}`, Buffer.from('<svg/>'));
+  assert.equal((await world.call('POST', completePath, finish)).status, 400);
+  world.pendingLogoObjects.set(`goodwell/${finish.uploadId}`, Buffer.from(demoLogo, 'base64'));
+  assert.equal((await world.call('POST', completePath, { ...finish, expectedRevision: 1 })).status, 409);
+  const committed = await world.call('POST', completePath, finish);
+  assert.equal(committed.status, 200);
+  assert.equal(committed.body.profile.revision, 1);
+  assert.deepEqual(committed.body.profile.logo, { url: `${profileRoot}/logo`, contentType: 'image/png' });
+  assert.equal(world.pendingLogoObjects.size, 0);
+  assert.equal((await world.call('POST', completePath, finish)).status, 409);
+  assert.deepEqual(world.audit.filter((entry) => entry.action === 'profile.logo_added').length, 1);
 });
 
 test('authorized prescription reads use current server-owned clinic identity while clinician remains frozen', async () => {
