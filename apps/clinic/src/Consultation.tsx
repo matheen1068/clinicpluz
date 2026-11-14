@@ -6,6 +6,7 @@ import {
 } from './consultationApi';
 import { completeForFinalize, emptyMedication, emptyNote, mergeRecoveredFields, parseVitalForm, snapshotEdits, VITAL_FIELDS, vitalFormFrom, type RecoverySnapshot, type VitalForm } from './consultationForm';
 import { pilotDateToday } from './workflowApi';
+import { AllergyBanner } from './AllergyBanner';
 import { MedicineEntry } from './MedicineEntry';
 import PatientHistory from './PatientHistory';
 import DoctorSchedule from './DoctorSchedule';
@@ -341,7 +342,7 @@ function ConsultationDesk({ clinicSlug, csrfToken, role, onSessionLost, onDirtyC
 
   return <div className="consultation">
     <div className="workflow-intro"><div><span className="eyebrow">CLINICAL WORKSPACE</span><h3>{doctorRole ? 'Doctor workspace' : 'Observed vitals'}</h3><p>{doctorRole ? 'Review your assigned visits, record care, and finalize your own draft.' : 'Record measured vitals for an existing clinic visit. The assigned doctor sees the same saved measurements.'}</p></div><span className="workflow-pilot">Synthetic pilot only</span></div>
-    <p className="workflow-notice">Staff enter measured vitals; only the assigned doctor enters findings and medicines. This workspace does not make clinical decisions or check medicine safety. Do not enter real patient data in staging.</p>
+    <p className="workflow-notice">Staff enter measured vitals; only the assigned doctor enters findings and medicines. This workspace does not make clinical decisions. Recorded allergies are shown and matched to medicine names by text only; that is not a medicine-safety check. Do not enter real patient data in staging.</p>
     {doctorRole && <nav className="consultation-tabs" aria-label="Doctor visit sections">
       {DOCTOR_SECTIONS.map(({ id, label }) => <button key={id} type="button"
         aria-current={doctorSection === id ? 'page' : undefined}
@@ -360,6 +361,7 @@ function ConsultationDesk({ clinicSlug, csrfToken, role, onSessionLost, onDirtyC
         {!selected ? <section className="workflow-card consultation-empty" role="status"><span className="workflow-step">02</span><h4>Select a visit</h4><p>Choose an existing appointment from the list to view or record its encounter.</p></section> : readLoading ? <section className="workflow-card consultation-empty" role="status"><h4>Loading encounter…</h4><p>Checking visit and staff access.</p></section> : readError || !encounter ? <><section className="workflow-card consultation-empty" role="alert"><h4 ref={readErrorRef} tabIndex={-1}>Encounter unavailable</h4><p>{readError || 'The encounter could not be verified.'}</p><button type="button" className="workflow-link" onClick={reloadEncounter}>Retry encounter</button></section>{recoverySnapshot && <RecoveryCopy snapshot={recoverySnapshot} doctorRole={doctorRole} canRestore={false} onRestore={restoreLocalEdits} onDiscard={() => setRecoverySnapshot(null)} />}</> : <>
           <section className="workflow-card consultation-identity" aria-labelledby="encounter-heading">
             <div className="consultation-identity-top"><div><span className="eyebrow">VISIT RECORD</span><h4 id="encounter-heading">{encounter.patient.fullName}</h4><p>{encounter.patient.ageYears} years at registration · {encounter.patient.sex} · {encounter.doctor.displayName}</p></div><span className={`consultation-status${encounter.status === 'finalized' ? ' is-final' : ''}`}>{encounter.status === 'finalized' ? 'Finalized' : encounter.revision === 0 ? 'Not started' : 'Draft'}</span></div>
+            <AllergyBanner allergies={encounter.patient.allergies} />
             <p className="consultation-meta">Appointment: {clinicTime(selected.startAt)} · Clinic date: {selected.clinicDate} · {encounter.clinic.displayName}</p>
             {encounter.status === 'finalized' && encounter.finalizedAt && <p className="consultation-meta">Finalized: {clinicTime(encounter.finalizedAt)}</p>}
             <button type="button" className="workflow-link consultation-refresh" onClick={reloadEncounter} disabled={!!pending || feePending}>Refresh visit</button>
@@ -405,7 +407,7 @@ function ConsultationDesk({ clinicSlug, csrfToken, role, onSessionLost, onDirtyC
               <div className="consultation-meds-head"><h5>Doctor-entered prescription items</h5><button type="button" className="workflow-link" disabled={!!pending || needsReload || medications.length >= 20} onClick={() => setMedications([...medications, emptyMedication()])}>Add medicine</button></div>
               {medications.length === 0 && <p className="workflow-empty">No medicine entries. A consultation may be finalized without a prescription.</p>}
               {medications.map((medicine, index) => <MedicineEntry key={index} clinicSlug={clinicSlug} csrfToken={csrfToken}
-                index={index} medicine={medicine} disabled={!!pending || needsReload} onSessionLost={onSessionLost}
+                index={index} medicine={medicine} allergies={encounter.patient.allergies} disabled={!!pending || needsReload} onSessionLost={onSessionLost}
                 onChange={(value) => setMedications((current) => current.map((item, itemIndex) => itemIndex === index ? value : item))}
                 onRemove={() => setMedications((current) => current.filter((_, itemIndex) => itemIndex !== index))} />)}
               <button className="workflow-action consultation-save" type="submit" disabled={!!pending || needsReload || !noteDirty}>Save prescription draft</button>

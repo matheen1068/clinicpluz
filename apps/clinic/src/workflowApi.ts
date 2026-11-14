@@ -12,6 +12,8 @@ export interface Patient {
   sex: PatientSex;
   email?: string;
   contactPatientId: string | null;
+  /** null = not recorded, [] = no known allergies */
+  allergies: string[] | null;
 }
 export interface Appointment {
   id: string;
@@ -38,6 +40,7 @@ export interface NewPatient {
   sex: PatientSex;
   email?: string;
   contactPatientId?: string;
+  allergies?: string[];
 }
 export interface NewAppointment { patientId: string; doctorId: string; startAt: string; source: BookingSource }
 
@@ -96,7 +99,9 @@ function patient(value: unknown): Patient {
       typeof value.ageYears !== 'number' || !Number.isInteger(value.ageYears) || value.ageYears < 0 || !SEXES.has(value.sex as PatientSex) ||
       (value.email !== undefined && value.email !== null && typeof value.email !== 'string') ||
       (value.contactPatientId !== undefined && value.contactPatientId !== null &&
-        (typeof value.contactPatientId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(value.contactPatientId)))) {
+        (typeof value.contactPatientId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(value.contactPatientId))) ||
+      (value.allergies !== undefined && value.allergies !== null &&
+        (!Array.isArray(value.allergies) || value.allergies.length > 10 || value.allergies.some((item) => typeof item !== 'string')))) {
     throw new WorkflowApiError(null, 'Invalid patient response');
   }
   return {
@@ -104,6 +109,7 @@ function patient(value: unknown): Patient {
     sex: value.sex as PatientSex,
     ...(typeof value.email === 'string' && value.email ? { email: value.email } : {}),
     contactPatientId: typeof value.contactPatientId === 'string' ? value.contactPatientId : null,
+    allergies: Array.isArray(value.allergies) ? (value.allergies as string[]) : null,
   };
 }
 function validTimestamp(value: unknown): value is string {

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { matchingAllergies } from './allergyCheck';
 import { ConsultationApiError, searchMedicines, type MedicineCatalogItem, type Medication, type MedicineTimeOfDay } from './consultationApi';
 
 const DIRECTION_FIELDS = [
@@ -16,13 +17,15 @@ interface Props {
   csrfToken: string;
   index: number;
   medicine: Medication;
+  allergies?: readonly string[] | null;
   disabled: boolean;
   onChange: (medicine: Medication) => void;
   onRemove: () => void;
   onSessionLost: () => void;
 }
 
-export function MedicineEntry({ clinicSlug, csrfToken, index, medicine, disabled, onChange, onRemove, onSessionLost }: Props) {
+export function MedicineEntry({ clinicSlug, csrfToken, index, medicine, allergies, disabled, onChange, onRemove, onSessionLost }: Props) {
+  const allergyMatches = matchingAllergies(medicine.name, allergies);
   const [query, setQuery] = useState('');
   const [items, setItems] = useState<MedicineCatalogItem[]>([]);
   const [searching, setSearching] = useState(false);
@@ -71,6 +74,7 @@ export function MedicineEntry({ clinicSlug, csrfToken, index, medicine, disabled
 
   return <fieldset className="consultation-med">
     <legend>Medicine {index + 1}</legend>
+    {allergyMatches.length > 0 && <p className="allergy-warning" role="alert"><strong>Recorded allergy to check:</strong> {allergyMatches.join(', ')}. This is a text match only; the doctor decides.</p>}
     <div className="consultation-catalog">
       <label htmlFor={`medicine-search-${index}`}>Find in clinic medicine list</label>
       <input id={`medicine-search-${index}`} type="search" autoComplete="off" maxLength={64}
