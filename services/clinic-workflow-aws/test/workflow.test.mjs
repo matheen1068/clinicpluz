@@ -710,6 +710,50 @@ test('nurse vitals, doctor draft, and doctor finalization preserve attribution a
     .map((entry) => entry.action), ['vitals.saved', 'draft.saved', 'encounter.finalized']);
 });
 
+test('doctor follow-up plan is validated, kept when omitted, clearable, and printed on the finalized prescription', async () => {
+  const world = setup();
+  const selected = await seedAppointment(world);
+  const key = `goodwell/${selected.clinicDate}/${selected.appointmentId}`;
+  const day = (n) => new Date(Date.parse(`${selected.clinicDate}T00:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
+  const plan = { date: day(7), purpose: 'BP review', bring: 'Fasting blood sugar report' };
+  const send = (rev, extra) => world.call('POST', `${consultationBase}/draft`,
+    { ...selected, expectedRevision: rev, note, medications, ...extra }, doctorSession);
+
+  for (const bad of [
+    { date: selected.clinicDate }, { date: day(-1) }, { date: day(366) }, { date: '2026-02-30' },
+    { date: day(3), purpose: 'x'.repeat(301) }, { date: day(3), extra: 1 }, 'tomorrow',
+  ]) assert.equal((await send(0, { followUp: bad })).status, 400);
+  assert.equal(world.encounters.size, 0);
+
+  assert.equal((await send(0, { followUp: plan })).status, 200);
+  assert.deepEqual(world.encounters.get(key).followUp, plan);
+  // Saving without the key keeps the plan; null removes it.
+  assert.equal((await send(1)).status, 200);
+  assert.deepEqual(world.encounters.get(key).followUp, plan);
+  const finalized0 = await world.call('POST', `${consultationBase}/finalize`, { ...selected, expectedRevision: 2 }, doctorSession);
+  assert.equal(finalized0.status, 200);
+  assert.deepEqual(finalized0.body.encounter.followUp, plan);
+  assert.deepEqual(finalized0.body.printablePrescription.followUp, plan);
+
+  // Reception can see the plan (no notes) so they can book the visit.
+  const reception = await world.call('POST', `${consultationBase}/read`, selected);
+  assert.equal(reception.status, 200);
+  assert.deepEqual(reception.body.encounter.followUp, plan);
+  assert.equal(reception.body.encounter.note, undefined);
+});
+
+test('clearing the follow-up plan with null removes it', async () => {
+  const world = setup();
+  const selected = await seedAppointment(world);
+  const key = `goodwell/${selected.clinicDate}/${selected.appointmentId}`;
+  const date = new Date(Date.parse(`${selected.clinicDate}T00:00:00Z`) + 5 * 86_400_000).toISOString().slice(0, 10);
+  assert.equal((await world.call('POST', `${consultationBase}/draft`,
+    { ...selected, expectedRevision: 0, note, medications, followUp: { date, purpose: '', bring: '' } }, doctorSession)).status, 200);
+  assert.equal((await world.call('POST', `${consultationBase}/draft`,
+    { ...selected, expectedRevision: 1, note, medications, followUp: null }, doctorSession)).status, 200);
+  assert.equal(world.encounters.get(key).followUp, null);
+});
+
 test('consultation input, CSRF, stale revision, and incomplete finalization fail closed', async () => {
   const world = setup();
   const selected = await seedAppointment(world);
@@ -1042,7 +1086,8 @@ test('reception, clinic admin, and pharmacy can see only finalized prescription 
       ['appointmentId', 'clinicDate', 'doctorId', 'doctorName', 'finalizedAt', 'patientId', 'patientName', 'startAt'].sort());
     const detail = await world.call('POST', detailPath, withRx, staff);
     assert.equal(detail.status, 200);
-    assert.deepEqual(Object.keys(detail.body).sort(), ['printablePrescription', 'status']);
+    assert.deepEqual(Object.keys(detail.body).sort(), ['prescriptionRevision', 'printablePrescription', 'status']);
+    assert.equal(detail.body.prescriptionRevision, world.encounters.get(`goodwell/${withRx.clinicDate}/${withRx.appointmentId}`).revision);
     assert.equal(detail.body.status, 'finalized');
     assert.equal(detail.body.printablePrescription.medications[0].timing, null);
     assert.equal(detail.body.printablePrescription.patient.phone, undefined);

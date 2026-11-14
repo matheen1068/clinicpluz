@@ -105,3 +105,30 @@ export function completeForFinalize(note: ConsultationNote, medications: Medicat
         (medication.frequency.trim().length === 0 && !!medication.timing && medication.timing.timesOfDay.length > 0)) &&
       medication.duration.trim().length > 0 && medication.instructions.trim().length > 0);
 }
+
+export interface FollowUpForm { date: string; purpose: string; bring: string }
+export function emptyFollowUp(): FollowUpForm { return { date: '', purpose: '', bring: '' }; }
+export function followUpFormFrom(value: { date: string; purpose: string; bring: string } | null | undefined): FollowUpForm {
+  return value ? { date: value.date, purpose: value.purpose, bring: value.bring } : emptyFollowUp();
+}
+/** An empty date means no follow-up (sent as null so the server clears any saved plan). */
+export function followUpPayload(form: FollowUpForm): { date: string; purpose: string; bring: string } | null {
+  return form.date ? { date: form.date, purpose: form.purpose.trim(), bring: form.bring.trim() } : null;
+}
+export function addDaysIso(clinicDate: string, days: number): string {
+  const date = new Date(`${clinicDate}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+export function followUpProblem(form: FollowUpForm, clinicDate: string): string {
+  if (!form.date) return '';
+  const days = (Date.parse(`${form.date}T00:00:00Z`) - Date.parse(`${clinicDate}T00:00:00Z`)) / 86_400_000;
+  if (!Number.isFinite(days) || days < 1) return 'Choose a follow-up date after the visit date.';
+  if (days > 365) return 'Follow-up must be within one year.';
+  return '';
+}
+export function appendChip(current: string, chip: string): string {
+  const parts = current.split(',').map((item) => item.trim()).filter(Boolean);
+  if (parts.some((item) => item.toLowerCase() === chip.toLowerCase())) return current;
+  return [...parts, chip].join(', ').slice(0, 300);
+}

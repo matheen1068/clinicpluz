@@ -1,5 +1,6 @@
 import type { PrintablePrescription } from './consultationApi';
 import { medicationTimingText } from './medicationDirections';
+import { formatDay } from './FollowUpPlan';
 
 function clinicTime(value: string): string {
   return new Intl.DateTimeFormat('en-IN', {
@@ -14,6 +15,7 @@ export default function PrescriptionPrint({ prescription }: { prescription: Prin
     <div className="print-people"><p><strong>Patient:</strong> {prescription.patient.fullName} · {prescription.patient.ageYears} years at registration · {prescription.patient.sex}</p><p><strong>Doctor:</strong> {prescription.doctor.displayName}</p><p><strong>Finalized:</strong> {clinicTime(prescription.finalizedAt)}</p></div>
     <h2>Doctor-entered medicines</h2>
     <ol>{prescription.medications.map((medicine, index) => <li key={index}><strong>{medicine.name} {medicine.strength}</strong><p>Dose: {medicine.dose} · Route: {medicine.route}</p><p>{medicationTimingText(medicine)} · Duration: {medicine.duration}</p><p>Instructions: {medicine.instructions}</p></li>)}</ol>
+    {prescription.followUp && <div className="print-followup"><h2>Next visit</h2><p><strong>Please come back on:</strong> {formatDay(prescription.followUp.date)}</p>{prescription.followUp.purpose && <p><strong>Purpose:</strong> {prescription.followUp.purpose}</p>}{prescription.followUp.bring && <p><strong>Please bring:</strong> {prescription.followUp.bring}</p>}</div>}
     <footer>Generated from the finalized ClinicPluz encounter. No automated clinical checks or advice are provided.</footer>
   </section>;
 }

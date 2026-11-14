@@ -83,9 +83,10 @@ export async function readFinalizedPrescription(slug: string, item: Prescription
     headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
     body: JSON.stringify({ appointmentId: item.appointmentId, clinicDate: item.clinicDate }),
   });
-  if (!isRecord(value) || !onlyKeys(value, ['status', 'printablePrescription']) || value.status !== 'finalized' ||
+  if (!isRecord(value) || !onlyKeys(value, ['status', 'printablePrescription', 'prescriptionRevision']) || value.status !== 'finalized' ||
+      typeof value.prescriptionRevision !== 'number' || !Number.isSafeInteger(value.prescriptionRevision) || value.prescriptionRevision < 1 ||
       !isRecord(value.printablePrescription) ||
-      !onlyKeys(value.printablePrescription, ['clinic', 'doctor', 'patient', 'appointmentDate', 'finalizedAt', 'medications']) ||
+      !onlyKeys(value.printablePrescription, ['clinic', 'doctor', 'patient', 'appointmentDate', 'finalizedAt', 'medications', 'followUp']) ||
       !isRecord(value.printablePrescription.patient) ||
       !onlyKeys(value.printablePrescription.patient, ['id', 'fullName', 'ageYears', 'sex']) ||
       !Array.isArray(value.printablePrescription.medications) ||
@@ -99,5 +100,5 @@ export async function readFinalizedPrescription(slug: string, item: Prescription
       prescription.finalizedAt !== item.finalizedAt) {
     throw new ConsultationApiError(null, 'Prescription identity mismatch');
   }
-  return prescription;
+  return { ...prescription, revision: value.prescriptionRevision };
 }

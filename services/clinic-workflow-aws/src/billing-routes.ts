@@ -137,7 +137,9 @@ export async function handleBilling(input: HttpInput, endpoint: string, slug: st
   const doctor = member.role === 'doctor';
   const pharmacyRoute = endpoint.startsWith('billing/fulfillment');
   const doctorFeeRoute = endpoint === 'billing/consultation-fee/read' || endpoint === 'billing/consultation-charge';
-  if (pharmacyRoute ? !pharmacy : !(reception || (doctorFeeRoute && doctor))) {
+  // Reception/admin may only use the plain fulfillment route, and only to close a visit whose medicines the patient buys elsewhere (checked below).
+  const outsideClose = reception && endpoint === 'billing/fulfillment';
+  if (pharmacyRoute ? !(pharmacy || outsideClose) : !(reception || (doctorFeeRoute && doctor))) {
     return reply(403, { error: 'Role not allowed' });
   }
   const readGet = endpoint === 'billing/config' || endpoint === 'billing/episodes';
@@ -281,7 +283,9 @@ export async function handleBilling(input: HttpInput, endpoint: string, slug: st
         episode: view(next, { ...appointment, status: 'checked_in' }, encounter) };
   } else if (kind === 'fulfillment') {
     if (!keys(request, ['appointmentId', 'clinicDate', 'operationId', 'expectedRevision',
-      'prescriptionRevision', 'items', 'closeForCheckout']) ||
+      'prescriptionRevision', 'items', 'closeForCheckout'], ['reason']) ||
+      (reception ? request.reason !== 'patient_buys_outside' || (request.items as unknown[])?.length !== 0 ||
+        request.closeForCheckout !== true : request.reason !== undefined) ||
       !Number.isSafeInteger(request.expectedRevision) ||
       !Number.isSafeInteger(request.prescriptionRevision) ||
       !Array.isArray(request.items) || request.items.length > 10 ||
@@ -294,6 +298,9 @@ export async function handleBilling(input: HttpInput, endpoint: string, slug: st
         encounter.patientId !== appointment.patientId || encounter.doctorId !== appointment.doctorId ||
         encounter.medications.length === 0) return reply(404, { error: 'Finalized prescription unavailable' });
     if (base.pharmacyClosed) return reply(409, { error: 'Pharmacy disposition is closed' });
+    if (reception && (base.pharmacyLineCount > 0 || records.fulfillment.length > 0)) {
+      return reply(409, { error: 'Pharmacy has already recorded supply; the pharmacist must close this visit' });
+    }
     if (records.fulfillment.length >= 30 && request.items.length > 0) {
       return reply(409, { error: 'Pharmacy event limit reached; close or review the visit' });
     }
@@ -344,7 +351,8 @@ export async function handleBilling(input: HttpInput, endpoint: string, slug: st
     write.encounterRevision = encounter.revision;
     write.charges = charges;
     write.fulfillment = { id: op.id, prescriptionRevision: encounter.revision, items,
-      closeForCheckout: request.closeForCheckout, recordedAt: now.toISOString(), actorSub: member.sub };
+      closeForCheckout: request.closeForCheckout, recordedAt: now.toISOString(), actorSub: member.sub,
+      ...(reception ? { reason: 'patient_buys_outside' as const } : {}) };
     successBody = { episode: view(next, appointment, encounter) };
   } else if (kind === 'payment') {
     if (!keys(request, ['appointmentId', 'clinicDate', 'operationId', 'expectedRevision', 'amountPaise', 'method'], ['reference']) ||

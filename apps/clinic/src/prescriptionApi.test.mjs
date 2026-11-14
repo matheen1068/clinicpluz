@@ -27,13 +27,14 @@ test('reception/pharmacy queue and read use same-origin cookies without patient 
   const restore = mockFetch(async (url, options) => {
     calls.push({ url, options });
     if (calls.length === 1) return Response.json({ items: [item] });
-    return Response.json({ status: 'finalized', printablePrescription });
+    return Response.json({ status: 'finalized', prescriptionRevision: 3, printablePrescription });
   });
   try {
     const queue = await listFinalizedPrescriptions('goodwell', '2026-10-13');
     const print = await readFinalizedPrescription('goodwell', queue[0], 'csrf-1');
     assert.equal(queue.length, 1);
     assert.deepEqual(print.medications, [medicine]);
+    assert.equal(print.revision, 3);
     assert.equal(calls[0].url, '/api/workflow/clinics/goodwell/consultations/prescriptions?date=2026-10-13');
     assert.equal(calls[1].url, '/api/workflow/clinics/goodwell/consultations/prescriptions/read');
     assert.equal(calls[1].options.method, 'POST');
@@ -47,9 +48,9 @@ test('reception/pharmacy queue and read use same-origin cookies without patient 
 test('drafts, wrong clinic or patient, and extra clinical fields fail closed', async () => {
   for (const bad of [
     { status: 'draft', printablePrescription },
-    { status: 'finalized', printablePrescription: { ...printablePrescription, clinic: { slug: 'blesswell', displayName: 'Blesswell' } } },
-    { status: 'finalized', printablePrescription: { ...printablePrescription, patient: { ...printablePrescription.patient, id: 'patient-2' } } },
-    { status: 'finalized', printablePrescription, encounter: { note: 'must not be sent' } },
+    { status: 'finalized', prescriptionRevision: 1, printablePrescription: { ...printablePrescription, clinic: { slug: 'blesswell', displayName: 'Blesswell' } } },
+    { status: 'finalized', prescriptionRevision: 1, printablePrescription: { ...printablePrescription, patient: { ...printablePrescription.patient, id: 'patient-2' } } },
+    { status: 'finalized', prescriptionRevision: 1, printablePrescription, encounter: { note: 'must not be sent' } },
     { status: 'finalized', printablePrescription: { ...printablePrescription, patient: { ...printablePrescription.patient, phone: '+000' } } },
   ]) {
     const restore = mockFetch(async () => Response.json(bad));

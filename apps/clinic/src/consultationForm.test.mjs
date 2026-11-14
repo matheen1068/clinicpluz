@@ -67,3 +67,16 @@ test('recovery preserves only changed vital fields and copies a changed medicine
     { ...serverVitals, pulseBpm: '72' });
   assert.equal(snapshot.medications[0].name, 'Synthetic medicine');
 });
+
+test('follow-up helpers pick dates, validate range, and send null when cleared', async () => {
+  const { addDaysIso, followUpPayload, followUpProblem, appendChip, emptyFollowUp } = await import('./consultationForm.ts');
+  assert.equal(addDaysIso('2026-11-28', 7), '2026-12-05');
+  assert.equal(addDaysIso('2026-12-30', 3), '2027-01-02');
+  assert.equal(followUpPayload(emptyFollowUp()), null);
+  assert.deepEqual(followUpPayload({ date: '2026-12-05', purpose: ' BP review ', bring: '' }), { date: '2026-12-05', purpose: 'BP review', bring: '' });
+  assert.equal(followUpProblem({ date: '2026-11-28', purpose: '', bring: '' }, '2026-11-28') !== '', true);
+  assert.equal(followUpProblem({ date: '2026-12-05', purpose: '', bring: '' }, '2026-11-28'), '');
+  assert.equal(followUpProblem({ date: '2028-01-01', purpose: '', bring: '' }, '2026-11-28') !== '', true);
+  assert.equal(appendChip('X-ray', 'ECG'), 'X-ray, ECG');
+  assert.equal(appendChip('X-ray, ECG', 'ecg'), 'X-ray, ECG');
+});

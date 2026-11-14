@@ -217,6 +217,14 @@ export async function readFulfillment(slug: string, selected: EpisodeSelection, 
   if (episode.patientId !== value.patient.id) invalid('pharmacy patient identity');
   return { appointmentId: selected.appointmentId, clinicDate: selected.clinicDate, patient: value.patient as FulfillmentDetail['patient'], prescriptionRevision: value.prescriptionRevision, items, episode };
 }
+/** Reception/admin only: close the pharmacy step because the patient buys the medicines elsewhere. */
+export async function closeOutsidePharmacy(slug: string, selected: EpisodeSelection, expectedRevision: number, prescriptionRevision: number, operationId: string, csrfToken: string): Promise<Episode> {
+  selection(selected);
+  if (!count(expectedRevision) || !count(prescriptionRevision) || !uuid(operationId)) throw new BillingApiError(null, 'Invalid pharmacy close request');
+  const value = await post(slug, 'billing/fulfillment', { ...selectionBody(selected), operationId, expectedRevision, prescriptionRevision, items: [], closeForCheckout: true, reason: 'patient_buys_outside' }, csrfToken);
+  if (!isRecord(value)) invalid('pharmacy close');
+  return matchingEpisode(value.episode, selected);
+}
 export async function recordFulfillment(slug: string, selected: EpisodeSelection, expectedRevision: number, prescriptionRevision: number, items: SupplyInput[], closeForCheckout: boolean, operationId: string, csrfToken: string): Promise<Episode> {
   selection(selected);
   if (!count(expectedRevision) || !count(prescriptionRevision) || !uuid(operationId) || typeof closeForCheckout !== 'boolean' ||

@@ -60,6 +60,7 @@ export interface PrintableClinicIdentity extends ClinicIdentity {
   email: string | null;
   logoUrl: string | null;
 }
+export interface FollowUp { date: string; purpose: string; bring: string }
 export interface PrintablePrescription {
   clinic: PrintableClinicIdentity;
   patient: PersonIdentity;
@@ -67,6 +68,9 @@ export interface PrintablePrescription {
   appointmentDate: string;
   finalizedAt: string;
   medications: Medication[];
+  followUp?: FollowUp | null;
+  /** Encounter revision, present only when read through the prescription handoff route. */
+  revision?: number;
 }
 export interface Encounter {
   appointmentId: string;
@@ -76,6 +80,7 @@ export interface Encounter {
   vitals: Vitals | null;
   note?: ConsultationNote;
   medications?: Medication[];
+  followUp?: FollowUp | null;
   finalizedAt: string | null;
   patient: PersonIdentity;
   doctor: DoctorIdentity;
@@ -205,6 +210,14 @@ function parseVitals(value: unknown): Vitals | null {
   }
   return value as unknown as Vitals;
 }
+export function parseFollowUp(value: unknown): FollowUp | null {
+  if (value === null || value === undefined) return null;
+  if (!isRecord(value) || !validDate(value.date) || typeof value.purpose !== 'string' || value.purpose.length > 300 ||
+      typeof value.bring !== 'string' || value.bring.length > 300) {
+    throw new ConsultationApiError(null, 'Invalid follow-up response');
+  }
+  return { date: value.date, purpose: value.purpose, bring: value.bring };
+}
 export function parsePrintablePrescription(value: unknown): PrintablePrescription {
   if (!isRecord(value) || !validDate(value.appointmentDate) || !validTime(value.finalizedAt) ||
       !Array.isArray(value.medications) || value.medications.length === 0) {
@@ -213,6 +226,7 @@ export function parsePrintablePrescription(value: unknown): PrintablePrescriptio
   return {
     clinic: parsePrintableClinic(value.clinic), patient: parsePatient(value.patient), doctor: parseDoctor(value.doctor),
     appointmentDate: value.appointmentDate, finalizedAt: value.finalizedAt, medications: value.medications.map(parseMedication),
+    followUp: parseFollowUp(value.followUp),
   };
 }
 function parseEncounter(value: unknown, slug: string, appointmentId: string, clinicDate: string, printValue: unknown): Encounter {
@@ -236,6 +250,7 @@ function parseEncounter(value: unknown, slug: string, appointmentId: string, cli
       printable.patient.fullName !== patient.fullName || printable.patient.ageYears !== patient.ageYears ||
       printable.patient.sex !== patient.sex || printable.doctor.displayName !== doctor.displayName ||
       !medications || printable.medications.length !== medications.length ||
+      JSON.stringify(printable.followUp ?? null) !== JSON.stringify(parseFollowUp(value.followUp)) ||
       printable.medications.some((item, index) => MEDICATION_FIELDS.some((field) => item[field] !== medications[index][field]) ||
         JSON.stringify(item.timing) !== JSON.stringify(medications[index].timing)))) {
     throw new ConsultationApiError(null, 'Prescription identity mismatch');
@@ -248,6 +263,7 @@ function parseEncounter(value: unknown, slug: string, appointmentId: string, cli
     appointmentId, clinicDate, status: value.status, revision: value.revision,
     vitals: parseVitals(value.vitals), finalizedAt: value.finalizedAt,
     patient, doctor, clinic,
+    followUp: parseFollowUp(value.followUp),
     ...(note ? { note } : {}), ...(medications ? { medications } : {}),
     ...(printable ? { printablePrescription: printable } : {}),
   };
@@ -306,9 +322,10 @@ export async function saveVitals(slug: string, appointmentId: string, clinicDate
     method: 'POST', headers: csrfHeaders(csrfToken), body: JSON.stringify({ appointmentId, clinicDate, expectedRevision, vitals }),
   }), slug, appointmentId, clinicDate);
 }
-export async function saveDraft(slug: string, appointmentId: string, clinicDate: string, expectedRevision: number, note: ConsultationNote, medications: Medication[], csrfToken: string): Promise<Encounter> {
+export async function saveDraft(slug: string, appointmentId: string, clinicDate: string, expectedRevision: number, note: ConsultationNote, medications: Medication[], csrfToken: string, followUp?: FollowUp | null): Promise<Encounter> {
   if (!Number.isInteger(expectedRevision) || expectedRevision < 0 || !validDate(clinicDate) || !validId(appointmentId)) throw new ConsultationApiError(null, 'Invalid draft request');
-  const body = JSON.stringify({ appointmentId, clinicDate, expectedRevision, note, medications });
+  const body = JSON.stringify({ appointmentId, clinicDate, expectedRevision, note, medications,
+    ...(followUp === undefined ? {} : { followUp }) });
   if (body.length > 18_000) throw new ConsultationApiError(400, 'Draft is too long');
   return parseEncounterResponse(await request(path(slug, 'consultations/draft'), {
     method: 'POST', headers: csrfHeaders(csrfToken), body,

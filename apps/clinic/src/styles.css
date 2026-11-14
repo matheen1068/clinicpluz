@@ -655,3 +655,23 @@ select:focus-visible, input:focus-visible { outline: 3px solid #82d6a3; outline-
 .patient-allergy-line { display: block; margin-top: 2px; font-size: 12px; color: var(--cp-muted); }
 .workflow-check { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .workflow-check input { width: auto; }
+
+/* Follow-up plan */
+.followup-plan { border: 1px solid #cfe3d8; border-radius: 12px; padding: 14px 16px; margin: 14px 0; display: grid; gap: 10px; }
+.followup-plan legend { font-weight: 700; padding: 0 6px; color: var(--cp-ink); }
+.followup-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { border: 1px solid #b9d3c6; background: #f3faf6; color: var(--cp-ink); border-radius: 999px; padding: 5px 12px; font-size: 13px; cursor: pointer; }
+.chip:hover { background: #e4f3ea; }
+.chip.is-on { background: var(--cp-brand); border-color: var(--cp-brand); color: #fff; }
+.followup-summary { margin: 0; }
+.print-followup { margin-top: 16px; padding: 10px 12px; border: 1.5px solid #000; }
+.print-followup h2 { margin: 0 0 6px; }
+.print-followup p { margin: 2px 0; }
+.followup-banner { border: 1px solid #b9d3c6; background: #f3faf6; border-radius: 12px; padding: 12px 14px; display: grid; gap: 4px; }
+.checklist { list-style: none; padding: 0; margin: 8px 0; display: grid; gap: 4px; }
+.checklist li { display: flex; gap: 8px; align-items: baseline; }
+.checklist .tick { font-weight: 700; color: var(--cp-brand-strong); }
+.checklist .todo { color: var(--cp-muted); }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.consultation-route { display: grid; gap: 8px; }
+.reception-rx-actions { display: grid; gap: 12px; margin-top: 12px; }
