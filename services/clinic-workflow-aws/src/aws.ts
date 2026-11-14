@@ -51,15 +51,22 @@ function patient(item: Item): Patient {
   if (contactPatientId !== null && !/^[A-Za-z0-9_-]{1,64}$/.test(contactPatientId)) {
     throw new Error('Invalid contactPatientId');
   }
+  let allergies: string[] | undefined;
+  if (item.allergies !== undefined) {
+    const list = item.allergies.L;
+    if (!list || list.length > 10 || list.some((entry) => typeof entry.S !== 'string')) throw new Error('Invalid allergies');
+    allergies = list.map((entry) => entry.S as string);
+  }
   return { id: string(item, 'id'), fullName: string(item, 'fullName'), phone: string(item, 'phone'),
     ageYears: integer(item, 'ageYears'), sex, email: maybeString(item, 'email'), contactPatientId,
-    registeredAt: string(item, 'registeredAt') };
+    registeredAt: string(item, 'registeredAt'), ...(allergies ? { allergies } : {}) };
 }
 function patientFields(value: Patient): Item {
   return { id: s(value.id), fullName: s(value.fullName), phone: s(value.phone),
     ageYears: n(value.ageYears), sex: s(value.sex), email: value.email ? s(value.email) : { NULL: true },
     contactPatientId: value.contactPatientId ? s(value.contactPatientId) : { NULL: true },
-    registeredAt: s(value.registeredAt) };
+    registeredAt: s(value.registeredAt),
+    ...(value.allergies ? { allergies: { L: value.allergies.map(s) } } : {}) };
 }
 function doctor(item: Item): Doctor {
   const staffSub = (item.staffSub as { S?: string } | undefined)?.S;
