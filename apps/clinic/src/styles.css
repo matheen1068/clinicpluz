@@ -1,4 +1,18 @@
 :root {
+  /* Design tokens: every colour used for text/status should come from here. Contrast on white/#f8faf8 noted. */
+  --cp-brand: #1d7a57;        /* primary action, white text 5.2:1 */
+  --cp-brand-strong: #176f4f; /* hover */
+  --cp-ink: #173432;
+  --cp-muted: #4f6b5f;        /* secondary text, 5.7:1 on white */
+  --cp-eyebrow: #1f6b4f;      /* small caps labels, 6.1:1 */
+  --cp-focus: #1d7a57;
+  --cp-status-booked: #2563a8;
+  --cp-status-waiting: #a15c07;
+  --cp-status-active: #0e5c56;
+  --cp-status-done: #1d7a57;
+  --cp-status-alert: #b3261e;
+}
+:root {
   font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: #173432;
   background: #f8faf8;
@@ -47,7 +61,7 @@ button:disabled { cursor: not-allowed; }
 .clinic-mark svg { width: 28px; height: 28px; }
 .clinic-mark--light { background: #a1edb9; color: #0e4841; }
 .story-main { margin: auto 0; padding: 84px 0 70px; max-width: 670px; }
-.eyebrow { color: #348968; font-size: 11px; font-weight: 780; letter-spacing: .18em; }
+.eyebrow { color: var(--cp-eyebrow); font-size: 11px; font-weight: 780; letter-spacing: .18em; }
 .eyebrow--light { display: inline-flex; align-items: center; gap: 10px; color: #afeccb; }
 .eyebrow-dot { width: 7px; height: 7px; border-radius: 50%; background: #91e7ae; box-shadow: 0 0 0 5px rgba(145, 231, 174, .1); }
 .story-main h1 { max-width: 650px; margin: 27px 0 25px; color: #f8fdf8; font-size: clamp(46px, 5.2vw, 77px); font-weight: 680; letter-spacing: -.07em; line-height: 1.085; }
@@ -91,8 +105,8 @@ button:disabled { cursor: not-allowed; }
 .password-toggle:hover { color: #155e45; background: #eff6f0; }
 .password-toggle svg { width: 21px; height: 21px; }
 .primary-button, .secondary-button { display: inline-flex; align-items: center; justify-content: center; gap: 13px; min-height: 54px; padding: 0 18px; border-radius: 11px; font-size: 14px; font-weight: 720; transition: background .18s, transform .18s, box-shadow .18s; }
-.primary-button { width: 100%; margin-top: 29px; border: 1px solid #227b5b; color: #fff; background: #21835e; box-shadow: 0 10px 24px rgba(27, 116, 79, .16); }
-.primary-button:hover:not(:disabled) { background: #176f4f; transform: translateY(-1px); box-shadow: 0 13px 28px rgba(27, 116, 79, .2); }
+.primary-button { width: 100%; margin-top: 29px; border: 1px solid var(--cp-brand); color: #fff; background: var(--cp-brand); box-shadow: 0 10px 24px rgba(27, 116, 79, .16); }
+.primary-button:hover:not(:disabled) { background: var(--cp-brand-strong); transform: translateY(-1px); box-shadow: 0 13px 28px rgba(27, 116, 79, .2); }
 .primary-button:disabled { opacity: .7; }
 .primary-button svg, .secondary-button svg { width: 18px; height: 18px; }
 .help-note { margin: 26px 0 0; color: #81938a; font-size: 12px; line-height: 1.65; text-align: center; }
@@ -186,8 +200,8 @@ select:focus-visible, input:focus-visible { outline: 3px solid #82d6a3; outline-
 .workflow-form input:disabled, .workflow-form select:disabled { background: #f3f7f4; }
 .workflow-inline { display: flex; gap: 8px; }
 .workflow-inline input { min-width: 0; }
-.workflow-inline button, .workflow-action { min-height: 42px; padding: 0 16px; color: #fff; border: 1px solid #1f7758; border-radius: 9px; background: #238662; font-size: 12px; font-weight: 750; white-space: nowrap; }
-.workflow-inline button:hover:not(:disabled), .workflow-action:hover:not(:disabled) { background: #196c4e; }
+.workflow-inline button, .workflow-action { min-height: 42px; padding: 0 16px; color: #fff; border: 1px solid #1f7758; border-radius: 9px; background: var(--cp-brand); font-size: 12px; font-weight: 750; white-space: nowrap; }
+.workflow-inline button:hover:not(:disabled), .workflow-action:hover:not(:disabled) { background: var(--cp-brand-strong); }
 .workflow-inline button:disabled, .workflow-action:disabled { opacity: .55; }
 .workflow-action { width: 100%; margin-top: 16px; }
 .workflow-error, .workflow-success, .workflow-empty, .workflow-selected { margin: 15px 0 0; padding: 11px 12px; border-radius: 9px; font-size: 12px; line-height: 1.5; }
@@ -266,7 +280,7 @@ select:focus-visible, input:focus-visible { outline: 3px solid #82d6a3; outline-
 .consultation-tabs button { flex: 0 0 auto; min-height: 40px; padding: 0 15px; color: #557363; border: 0; border-radius: 9px; background: transparent; font: inherit; font-size: 12px; font-weight: 740; cursor: pointer; }
 .consultation-tabs button[aria-current="page"] { color: #155b40; background: #fff; box-shadow: 0 3px 12px rgba(18, 74, 44, .1); }
 .consultation-tabs button:disabled { color: #9bad9f; cursor: not-allowed; }
-.consultation-tabs button:focus-visible { outline: 3px solid #249466; outline-offset: 2px; }
+.consultation-tabs button:focus-visible { outline: 3px solid var(--cp-focus); outline-offset: 2px; }
 .consultation-layout { display: grid; grid-template-columns: minmax(275px, 32%) minmax(0, 1fr); align-items: start; gap: 20px; }
 .consultation-layout.is-doctor { grid-template-columns: minmax(0, 1fr); }
 .consultation-main { display: grid; gap: 17px; min-width: 0; }
@@ -296,7 +310,7 @@ select:focus-visible, input:focus-visible { outline: 3px solid #82d6a3; outline-
 .doctor-slot-time span { color: #708477; font-size: 10px; }
 .doctor-slot-visit { display: grid; gap: 4px; width: 100%; margin-top: 10px; padding: 9px; border: 1px solid #c8e5cf; border-radius: 9px; background: #fff; color: #3c6650; text-align: left; overflow-wrap: anywhere; }
 .doctor-slot-visit:hover, .doctor-slot-visit.is-selected { border-color: #328c61; background: #eaf7ee; }
-.doctor-slot-visit:focus-visible { outline: 3px solid #249466; outline-offset: 2px; }
+.doctor-slot-visit:focus-visible { outline: 3px solid var(--cp-focus); outline-offset: 2px; }
 .doctor-slot-visit strong { color: #1c5137; font-size: 12px; }
 .doctor-slot-visit span, .doctor-slot-visit small { font-size: 10px; line-height: 1.4; }
 .doctor-slot-visit small { color: #16724b; font-weight: 760; }
@@ -324,19 +338,19 @@ select:focus-visible, input:focus-visible { outline: 3px solid #82d6a3; outline-
 .consultation-history .workflow-card-head { margin-bottom: 10px; }
 .consultation-history .workflow-step { font-size: 9px; white-space: nowrap; }
 .consultation-history-refresh { margin: 0 0 12px; }
-.consultation-history-intro { margin: 0 0 16px; color: #668074; font-size: 11px; line-height: 1.6; }
+.consultation-history-intro { margin: 0 0 16px; color: var(--cp-muted); font-size: 11px; line-height: 1.6; }
 .consultation-history-layout { display: grid; grid-template-columns: minmax(175px, 30%) minmax(0, 1fr); gap: 16px; }
 .consultation-history-list ul { display: grid; gap: 8px; max-height: 480px; margin: 0; padding: 0; overflow: auto; list-style: none; }
 .consultation-history-visit { display: grid; gap: 5px; width: 100%; padding: 11px 12px; border: 1px solid #dce8e0; border-radius: 10px; background: #fbfdfb; color: #426752; text-align: left; font-size: 11px; line-height: 1.4; }
 .consultation-history-visit:hover, .consultation-history-visit.is-selected { border-color: #79bb8f; background: #edf8f0; }
-.consultation-history-visit:focus-visible { outline: 3px solid #249466; outline-offset: 2px; }
+.consultation-history-visit:focus-visible { outline: 3px solid var(--cp-focus); outline-offset: 2px; }
 .consultation-history-visit strong { color: #204b39; font-size: 12px; }
 .consultation-history-visit small { color: #6c8174; }
 .consultation-history-more { margin-top: 10px; }
 .consultation-history-detail { min-width: 0; padding: 16px; border: 1px solid #e0eae2; border-radius: 12px; background: #f9fcfa; }
 .consultation-history-detail .workflow-empty, .consultation-history-detail .workflow-error { margin-top: 0; }
 .consultation-history-detail-head h5 { margin: 0 0 5px; color: #1c4734; font-size: 15px; }
-.consultation-history-detail-head h5:focus-visible { outline: 2px solid #249466; outline-offset: 3px; }
+.consultation-history-detail-head h5:focus-visible { outline: 2px solid var(--cp-focus); outline-offset: 3px; }
 .consultation-history-detail-head p, .consultation-history-block p { margin: 4px 0; color: #526d5d; font-size: 11px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 .consultation-history-block { margin-top: 15px; padding-top: 13px; border-top: 1px solid #dfebe2; }
 .consultation-history-block h6 { margin: 0 0 9px; color: #224936; font-size: 12px; }
@@ -380,7 +394,7 @@ select:focus-visible, input:focus-visible { outline: 3px solid #82d6a3; outline-
 .consultation-med-fields label:last-child { grid-column: 1 / -1; }
 .consultation-med-timing { margin: 0 0 13px; padding: 13px; border: 1px solid #d8e7db; border-radius: 10px; background: #f8fcf9; }
 .consultation-med-timing legend { color: #285d42; font-size: 12px; font-weight: 760; }
-.consultation-med-timing p { margin: 0 0 10px; color: #668074; font-size: 11px; line-height: 1.5; }
+.consultation-med-timing p { margin: 0 0 10px; color: var(--cp-muted); font-size: 11px; line-height: 1.5; }
 .consultation-time-choices { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 .consultation-time-choices label { display: inline-flex; align-items: center; gap: 6px; min-height: 38px; padding: 6px 11px; border: 1px solid #cbded2; border-radius: 8px; background: #fff; color: #245640; font-size: 12px; font-weight: 720; }
 .consultation-time-choices label:has(input:checked) { border-color: #249466; background: #eaf7ee; }
@@ -390,7 +404,7 @@ select:focus-visible, input:focus-visible { outline: 3px solid #82d6a3; outline-
 .consultation-catalog { position: relative; margin: 0 0 8px; }
 .consultation-catalog label { display: block; color: #315848; font-size: 12px; font-weight: 700; }
 .consultation-catalog input { width: 100%; min-height: 42px; margin-top: 7px; padding: 8px 10px; color: #1b3b32; border: 1px solid #cbded2; border-radius: 9px; background: #fff; font: inherit; font-size: 13px; }
-.consultation-catalog p, .consultation-catalog-hint { margin: 7px 0 10px; color: #668074; font-size: 11px; line-height: 1.45; }
+.consultation-catalog p, .consultation-catalog-hint { margin: 7px 0 10px; color: var(--cp-muted); font-size: 11px; line-height: 1.45; }
 .consultation-catalog-results { max-height: 220px; overflow: auto; border: 1px solid #cbded2; border-radius: 9px; background: #fff; }
 .consultation-catalog-results button { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 0; border-bottom: 1px solid #e5eee7; background: #fff; color: #245640; text-align: left; cursor: pointer; }
 .consultation-catalog-results button:hover, .consultation-catalog-results button:focus-visible { background: #edf7ef; }
@@ -408,7 +422,7 @@ select:focus-visible, input:focus-visible { outline: 3px solid #82d6a3; outline-
 .consultation-confirm .workflow-action { width: auto; min-height: 38px; margin: 0; }
 .consultation-print-action { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
 .consultation-print-action h4 { margin: 0 0 6px; }
-.consultation-print-action p { margin: 0; color: #668074; font-size: 12px; }
+.consultation-print-action p { margin: 0; color: var(--cp-muted); font-size: 12px; }
 .consultation-print-action .workflow-action { width: auto; min-height: 42px; margin: 0; }
 .prescription-handoff-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; }
 .prescription-handoff-head .consultation-queue-controls { margin: 0; }
@@ -416,7 +430,7 @@ select:focus-visible, input:focus-visible { outline: 3px solid #82d6a3; outline-
 .prescription-handoff-list { display: grid; align-content: start; gap: 8px; max-height: 630px; overflow: auto; }
 .prescription-handoff-item { display: grid; gap: 5px; width: 100%; padding: 12px; border: 1px solid #dce8e0; border-radius: 10px; background: #fbfdfb; color: #4f6d5c; text-align: left; }
 .prescription-handoff-item:hover, .prescription-handoff-item.is-selected { border-color: #69b587; background: #ecf8ef; }
-.prescription-handoff-item:focus-visible { outline: 3px solid #249466; outline-offset: 2px; }
+.prescription-handoff-item:focus-visible { outline: 3px solid var(--cp-focus); outline-offset: 2px; }
 .prescription-handoff-item strong { color: #214c38; font-size: 13px; }
 .prescription-handoff-item span, .prescription-handoff-item small { font-size: 11px; line-height: 1.5; }
 .prescription-handoff-detail { min-width: 0; padding: 18px; border: 1px solid #dfebe2; border-radius: 12px; background: #f9fcfa; }
@@ -456,7 +470,7 @@ select:focus-visible, input:focus-visible { outline: 3px solid #82d6a3; outline-
 .billing-episode-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr)); gap: 9px; }
 .billing-episode { display: grid; gap: 5px; min-width: 0; padding: 14px; border: 1px solid #dce8e0; border-radius: 11px; background: #fbfdfb; color: #385d49; text-align: left; }
 .billing-episode:hover, .billing-episode.is-selected { border-color: #5eaf7c; background: #ecf8ef; }
-.billing-episode:focus-visible, .billing-legacy-list button:focus-visible { outline: 3px solid #249466; outline-offset: 2px; }
+.billing-episode:focus-visible, .billing-legacy-list button:focus-visible { outline: 3px solid var(--cp-focus); outline-offset: 2px; }
 .billing-episode strong { color: #214b36; font-size: 14px; }
 .billing-episode span, .billing-episode small { font-size: 11px; line-height: 1.5; }
 .billing-detail-top { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 15px; padding-bottom: 15px; border-bottom: 1px solid #e3eee6; }
