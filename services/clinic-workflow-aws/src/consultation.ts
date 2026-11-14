@@ -20,6 +20,13 @@ export interface Note {
   plan: string;
 }
 
+/** Doctor's plan for the next visit. Optional; older encounters have none. */
+export interface FollowUp {
+  date: string;
+  purpose: string;
+  bring: string;
+}
+
 export interface MedicationTiming {
   timesOfDay: Array<'morning' | 'afternoon' | 'night'>;
   mealRelation: 'before' | 'after' | 'with' | 'unspecified';
@@ -54,6 +61,7 @@ export interface Encounter {
   vitals: Vitals | null;
   note: Note;
   medications: MedicationRecord[];
+  followUp?: FollowUp | null;
   noteAuthorSub: string | null;
   updatedAt: string | null;
   finalizedAt: string | null;
@@ -123,6 +131,22 @@ export function parseNote(value: unknown): Note | null {
     note[key] = text;
   }
   return note;
+}
+
+/** Returns the cleaned plan, null when the doctor clears it, or false when the input is invalid. */
+export function parseFollowUp(value: unknown, clinicDate: string): FollowUp | null | false {
+  if (value === null) return null;
+  if (!object(value) || !exactKeys(value, ['date', 'purpose', 'bring']) || !('date' in value)) return false;
+  const date = value.date;
+  if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
+  const when = new Date(`${date}T00:00:00Z`);
+  if (Number.isNaN(when.getTime()) || when.toISOString().slice(0, 10) !== date) return false;
+  const days = (when.getTime() - new Date(`${clinicDate}T00:00:00Z`).getTime()) / 86_400_000;
+  if (days < 1 || days > 365) return false;
+  const purpose = boundedText(value.purpose ?? '', 300);
+  const bring = boundedText(value.bring ?? '', 300);
+  if (purpose === null || bring === null) return false;
+  return { date, purpose, bring };
 }
 
 export function parseMedications(value: unknown, actorSub: string, appointmentId: string, now: Date): MedicationRecord[] | null {

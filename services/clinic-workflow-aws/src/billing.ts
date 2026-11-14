@@ -43,6 +43,8 @@ export interface FulfillmentEvent {
     name: string; strength: string;
   }>;
   closeForCheckout: boolean; recordedAt: string; actorSub: string;
+  /** Set only when reception closes pharmacy because the patient buys the medicines elsewhere. */
+  reason?: 'patient_buys_outside';
 }
 export interface EpisodeRecords {
   episode: BillEpisode | null; charges: BillCharge[]; payments: BillPayment[];

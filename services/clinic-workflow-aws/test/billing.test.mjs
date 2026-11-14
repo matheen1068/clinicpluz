@@ -412,6 +412,61 @@ test('manual fee after check-in stays open through prepayment and pharmacy until
     ['check_in', 'consultation_charge', 'payment', 'fulfillment', 'payment', 'receipt']);
 });
 
+test('reception can close pharmacy when the patient buys medicines outside, then issue a fee-only receipt', async () => {
+  const world = setupBilling();
+  const key = `goodwell/${appointment.id}`;
+  assert.equal((await world.call('POST', `${API}/appointments/check-in`, { ...selected, operationId: IDS.checkIn })).status, 200);
+  assert.equal((await world.call('POST', `${API}/billing/consultation-charge`,
+    { ...selected, operationId: IDS.fee, expectedRevision: 1, amountPaise: 100_000 })).status, 200);
+  assert.equal((await world.call('POST', `${API}/billing/payments`,
+    { ...selected, operationId: IDS.prepayment, expectedRevision: 2, amountPaise: 100_000, method: 'upi' })).status, 200);
+  const encounter = world.finalize();
+  const outside = { ...selected, operationId: IDS.fulfillment, expectedRevision: 3,
+    prescriptionRevision: encounter.revision, items: [], closeForCheckout: true, reason: 'patient_buys_outside' };
+
+  // Reception must name the reason, send no items, and actually close; other roles stay unchanged.
+  for (const bad of [
+    { ...outside, reason: undefined }, { ...outside, reason: 'other' }, { ...outside, closeForCheckout: false },
+    { ...outside, items: [{ prescriptionIndex: 0, quantity: 1, quantityUnit: 'tablet', unitPricePaise: 100, status: 'supplied' }] },
+  ]) assert.equal((await world.call('POST', `${API}/billing/fulfillment`, bad)).status, 400);
+  assert.equal((await world.call('POST', `${API}/billing/fulfillment`, outside, { role: 'doctor' })).status, 403);
+  assert.equal((await world.call('POST', `${API}/billing/fulfillment`, outside, { role: 'nurse' })).status, 403);
+  assert.equal((await world.call('POST', `${API}/billing/fulfillment`, outside, { role: 'pharmacist' })).status, 400);
+  assert.equal((await world.call('POST', `${API}/billing/fulfillment/read`, selected)).status, 403);
+
+  const closed = await world.call('POST', `${API}/billing/fulfillment`, outside);
+  assert.equal(closed.status, 200, JSON.stringify(closed.body));
+  assert.equal(closed.body.episode.pharmacyTotalPaise, 0);
+  assert.equal(closed.body.episode.checkoutStatus, 'ready_for_checkout');
+  assert.equal(world.records.get(key).fulfillment[0].reason, 'patient_buys_outside');
+  // The pharmacist can no longer record supply for a closed visit.
+  assert.equal((await world.call('POST', `${API}/billing/fulfillment`,
+    { ...selected, operationId: IDS.balancePayment, expectedRevision: 4, prescriptionRevision: encounter.revision,
+      items: [{ prescriptionIndex: 0, quantity: 1, quantityUnit: 'tablet', unitPricePaise: 100, status: 'supplied' }],
+      closeForCheckout: true }, { role: 'pharmacist' })).status, 409);
+  const paid = await world.call('POST', `${API}/billing/receipt`, { ...selected, operationId: IDS.receipt, expectedRevision: 4 });
+  assert.equal(paid.status, 200, JSON.stringify(paid.body));
+  assert.equal(paid.body.episode.checkoutStatus, 'paid');
+  assert.equal(paid.body.receipt.totalPaise, 100_000);
+});
+
+test('reception cannot close pharmacy after the pharmacist has recorded supply', async () => {
+  const world = setupBilling();
+  assert.equal((await world.call('POST', `${API}/appointments/check-in`, { ...selected, operationId: IDS.checkIn })).status, 200);
+  assert.equal((await world.call('POST', `${API}/billing/consultation-charge`,
+    { ...selected, operationId: IDS.fee, expectedRevision: 1, amountPaise: 100_000 })).status, 200);
+  const encounter = world.finalize();
+  const part = await world.call('POST', `${API}/billing/fulfillment`,
+    { ...selected, operationId: IDS.fulfillment, expectedRevision: 2, prescriptionRevision: encounter.revision,
+      items: [{ prescriptionIndex: 0, quantity: 2, quantityUnit: 'tablet', unitPricePaise: 1000, status: 'partly_supplied' }],
+      closeForCheckout: false }, { role: 'pharmacist' });
+  assert.equal(part.status, 200, JSON.stringify(part.body));
+  const refused = await world.call('POST', `${API}/billing/fulfillment`,
+    { ...selected, operationId: IDS.balancePayment, expectedRevision: 3, prescriptionRevision: encounter.revision,
+      items: [], closeForCheckout: true, reason: 'patient_buys_outside' });
+  assert.equal(refused.status, 409);
+});
+
 test('billing routes enforce role, tenant, entitlement, CSRF, and optimistic revision', async () => {
   const world = setupBilling();
   const checkIn = { ...selected, operationId: IDS.checkIn };

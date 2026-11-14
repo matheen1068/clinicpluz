@@ -4,6 +4,7 @@ import { medicationTimingText } from './medicationDirections';
 import PrescriptionPrint from './PrescriptionPrint';
 import PrescriptionEmail from './PrescriptionEmail';
 import PharmacyFulfillment from './PharmacyFulfillment';
+import ReceptionRxActions, { type BookingPrefill } from './ReceptionRxActions';
 import PharmacyHandoverPrint from './PharmacyHandoverPrint';
 import type { FulfillmentDetail } from './billingApi';
 import { listFinalizedPrescriptions, readFinalizedPrescription, type PrescriptionQueueItem } from './prescriptionApi';
@@ -15,6 +16,7 @@ interface Props {
   role: 'clinic_admin' | 'receptionist' | 'pharmacist';
   onSessionLost: () => void;
   onPendingChange?: (pending: boolean) => void;
+  onBookFollowUp?: (prefill: Omit<BookingPrefill, 'token'>) => void;
 }
 
 function clinicTime(value: string): string {
@@ -23,7 +25,7 @@ function clinicTime(value: string): string {
   }).format(new Date(value));
 }
 
-export default function PrescriptionHandoff({ clinicSlug, csrfToken, role, onSessionLost, onPendingChange }: Props) {
+export default function PrescriptionHandoff({ clinicSlug, csrfToken, role, onSessionLost, onPendingChange, onBookFollowUp }: Props) {
   const [date, setDate] = useState(pilotDateToday);
   const [items, setItems] = useState<PrescriptionQueueItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -38,10 +40,11 @@ export default function PrescriptionHandoff({ clinicSlug, csrfToken, role, onSes
   const [emailSending, setEmailSending] = useState(false);
   const [fulfillmentPending, setFulfillmentPending] = useState(false);
   const [printSlip, setPrintSlip] = useState<FulfillmentDetail | null>(null);
+  const [closePending, setClosePending] = useState(false);
   const detailController = useRef<AbortController | null>(null);
   const sessionLostRef = useRef(onSessionLost);
   useEffect(() => { sessionLostRef.current = onSessionLost; }, [onSessionLost]);
-  useEffect(() => { onPendingChange?.(emailSending || fulfillmentPending || !!printSlip); }, [emailSending, fulfillmentPending, printSlip, onPendingChange]);
+  useEffect(() => { onPendingChange?.(emailSending || fulfillmentPending || closePending || !!printSlip); }, [emailSending, fulfillmentPending, closePending, printSlip, onPendingChange]);
   useEffect(() => () => onPendingChange?.(false), [onPendingChange]);
 
   useEffect(() => {
@@ -177,6 +180,7 @@ export default function PrescriptionHandoff({ clinicSlug, csrfToken, role, onSes
                 <h6>Doctor-entered medicines</h6><ol>{prescription.medications.map((medicine, index) => <li key={index}><strong>{medicine.name} {medicine.strength}</strong><p>Dose: {medicine.dose} · Route: {medicine.route}</p><p>{medicationTimingText(medicine)} · Duration: {medicine.duration}</p><p>Instructions: {medicine.instructions}</p></li>)}</ol>
                 <button type="button" className="workflow-action prescription-handoff-print" onClick={() => { setPrintSlip(null); window.requestAnimationFrame(() => window.print()); }}>Print finalized prescription</button>
                 {role !== 'pharmacist' && <PrescriptionEmail key={`${selected.appointmentId}:${selected.clinicDate}:${selected.finalizedAt}`} clinicSlug={clinicSlug} csrfToken={csrfToken} selection={selected} onAccessError={handleAccessError} onSendingChange={setEmailSending} />}
+                {role !== 'pharmacist' && onBookFollowUp && <ReceptionRxActions key={`rx:${selected.appointmentId}:${selected.clinicDate}:${selected.finalizedAt}`} clinicSlug={clinicSlug} csrfToken={csrfToken} selected={selected} prescription={prescription} onSessionLost={onSessionLost} onPendingChange={setClosePending} onBookFollowUp={onBookFollowUp} />}
                 {role === 'pharmacist' && <PharmacyFulfillment key={`${selected.appointmentId}:${selected.clinicDate}:${selected.finalizedAt}`} clinicSlug={clinicSlug} csrfToken={csrfToken} selected={selected} prescription={prescription} onSessionLost={onSessionLost} onPendingChange={setFulfillmentPending} onPrintSlip={setPrintSlip} />}
               </>}
           </div>

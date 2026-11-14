@@ -2,9 +2,11 @@ import { useEffect, useRef, useState } from 'react';
 import { matchingAllergies } from './allergyCheck';
 import { ConsultationApiError, searchMedicines, type MedicineCatalogItem, type Medication, type MedicineTimeOfDay } from './consultationApi';
 
+// Dose suggestions are only common unit phrasings; the doctor always enters the amount.
+const DOSE_UNITS = ['1 tablet', '2 tablets', '1 capsule', '2 capsules', '5 ml', '10 ml', '1 drop', '2 drops', '1 puff', '1 sachet', '1 injection'];
+const ROUTES = ['Oral', 'Topical', 'Injection (IM)', 'Injection (IV)', 'Injection (SC)', 'Eye drops', 'Ear drops', 'Nasal', 'Inhalation', 'Sublingual', 'Rectal'];
 const DIRECTION_FIELDS = [
   { key: 'dose', label: 'Dose' },
-  { key: 'route', label: 'Route' },
   { key: 'duration', label: 'Duration' },
   { key: 'instructions', label: 'Instructions' },
 ] as const;
@@ -24,8 +26,10 @@ interface Props {
   onSessionLost: () => void;
 }
 
+const OTHER_ROUTE = '__other';
 export function MedicineEntry({ clinicSlug, csrfToken, index, medicine, allergies, disabled, onChange, onRemove, onSessionLost }: Props) {
   const allergyMatches = matchingAllergies(medicine.name, allergies);
+  const routeChoice = ROUTES.includes(medicine.route) ? medicine.route : medicine.route === '' ? '' : OTHER_ROUTE;
   const [query, setQuery] = useState('');
   const [items, setItems] = useState<MedicineCatalogItem[]>([]);
   const [searching, setSearching] = useState(false);
@@ -95,7 +99,17 @@ export function MedicineEntry({ clinicSlug, csrfToken, index, medicine, allergie
       <label>Strength <span className="workflow-optional">optional</span><input type="text" maxLength={160} value={medicine.strength}
         onChange={(event) => onChange({ ...medicine, strength: event.target.value })} disabled={disabled} /></label>
       {DIRECTION_FIELDS.map(({ key, label }) => <label key={key}>{label}<input type="text" maxLength={key === 'instructions' ? 500 : 160}
+        list={key === 'dose' ? `dose-units-${index}` : undefined}
         value={medicine[key]} onChange={(event) => onChange({ ...medicine, [key]: event.target.value })} disabled={disabled} /></label>)}
+      <datalist id={`dose-units-${index}`}>{DOSE_UNITS.map((unit) => <option key={unit} value={unit} />)}</datalist>
+      <div className="consultation-route">
+        <label>Route<select value={routeChoice} onChange={(event) => onChange({ ...medicine, route: event.target.value === OTHER_ROUTE ? (routeChoice === OTHER_ROUTE ? medicine.route : ' ') : event.target.value })} disabled={disabled}>
+          <option value="">Select route</option>
+          {ROUTES.map((route) => <option key={route} value={route}>{route}</option>)}
+          <option value={OTHER_ROUTE}>Other…</option>
+        </select></label>
+        {routeChoice === OTHER_ROUTE && <label>Other route<input type="text" maxLength={160} value={medicine.route.trim() ? medicine.route : ''} onChange={(event) => onChange({ ...medicine, route: event.target.value })} disabled={disabled} /></label>}
+      </div>
     </div>
     <fieldset className="consultation-med-timing" disabled={disabled}>
       <legend>When to take · doctor-entered</legend>

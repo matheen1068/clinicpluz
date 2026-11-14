@@ -15,6 +15,7 @@ interface Props {
   role: ClinicRole;
   onSessionLost: () => void;
   onPendingChange?: (pending: boolean) => void;
+  prefill?: { patientName: string; doctorId: string; date: string; purpose: string; token: number } | null;
 }
 
 const CAN_BOOK = new Set<ClinicRole>(['clinic_admin', 'receptionist', 'nurse']);
@@ -40,7 +41,7 @@ function errorMessage(error: unknown, action: 'load' | 'search' | 'register' | '
   return 'The clinic workflow could not be loaded. Please retry.';
 }
 
-function WorkflowDesk({ clinicSlug, csrfToken, role, onSessionLost, onPendingChange }: Props) {
+function WorkflowDesk({ clinicSlug, csrfToken, role, onSessionLost, onPendingChange, prefill }: Props) {
   const canBook = CAN_BOOK.has(role);
   const canConfirmFee = role === 'clinic_admin' || role === 'receptionist';
   const [accessDenied, setAccessDenied] = useState(false);
@@ -98,6 +99,16 @@ function WorkflowDesk({ clinicSlug, csrfToken, role, onSessionLost, onPendingCha
   const allSlotsEnded = slotOptions.every((option) => option.ended);
 
   useEffect(() => () => searchController.current?.abort(), []);
+  const [followUpNote, setFollowUpNote] = useState<string | null>(null);
+  const appliedPrefill = useRef(0);
+  useEffect(() => {
+    if (!prefill || !canBook || doctorsLoading || appliedPrefill.current === prefill.token) return;
+    appliedPrefill.current = prefill.token;
+    setMode('search'); setQuery(prefill.patientName); setDate(prefill.date); setTime(''); setSource('phone');
+    if (doctors.some((doctor) => doctor.id === prefill.doctorId)) setSelectedDoctorId(prefill.doctorId);
+    setFollowUpNote(`Follow-up booking for ${prefill.patientName} on ${prefill.date}${prefill.purpose ? ` (${prefill.purpose})` : ''}. Pick the right patient below, choose a time, then book.`);
+    void runSearch(prefill.patientName);
+  }, [prefill, canBook, doctorsLoading, doctors]);
   useEffect(() => { onPendingChange?.(booking || registering || feePending); }, [booking, registering, feePending, onPendingChange]);
   useEffect(() => () => onPendingChange?.(false), [onPendingChange]);
   useEffect(() => {
@@ -160,9 +171,9 @@ function WorkflowDesk({ clinicSlug, csrfToken, role, onSessionLost, onPendingCha
     return () => controller.abort();
   }, [clinicSlug, canConfirmFee, date, queueReload]);
 
-  async function handleSearch(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (query.trim().length < 2 || searchLoading) return;
+  function handleSearch(event: FormEvent<HTMLFormElement>) { event.preventDefault(); void runSearch(query); }
+  async function runSearch(text: string) {
+    if (text.trim().length < 2) return;
     setBookingError('');
     setBookingSuccess('');
     setResults([]);
@@ -175,7 +186,7 @@ function WorkflowDesk({ clinicSlug, csrfToken, role, onSessionLost, onPendingCha
     const controller = new AbortController();
     searchController.current = controller;
     try {
-      const found = await searchPatients(clinicSlug, query, csrfToken, controller.signal);
+      const found = await searchPatients(clinicSlug, text, csrfToken, controller.signal);
       if (!controller.signal.aborted) { setResults(found); setSearched(true); }
     } catch (error) {
       if (!controller.signal.aborted && !handleAccessError(error)) setSearchError(errorMessage(error, 'search'));
@@ -313,6 +324,7 @@ function WorkflowDesk({ clinicSlug, csrfToken, role, onSessionLost, onPendingCha
       <div className="workflow-grid">
         <section className="workflow-card" aria-labelledby="patient-heading">
           <div className="workflow-card-head"><div><span className="workflow-step">01</span><h4 id="patient-heading">Find a patient</h4></div><p>Staff enter details for both phone bookings and walk-ins.</p></div>
+          {followUpNote && <p className="workflow-notice" role="status">{followUpNote}</p>}
           {canBook && <div className="workflow-switch" role="group" aria-label="Patient action"><button type="button" className={mode === 'search' ? 'is-active' : ''} onClick={() => { setMode('search'); setRegisterError(''); }} disabled={registering || booking}>Search existing</button><button type="button" className={mode === 'register' ? 'is-active' : ''} onClick={() => startNewRegistration()} disabled={registering || booking}>Register new</button></div>}
           {mode === 'search' || !canBook ? <>
             <form className="workflow-form workflow-search" onSubmit={handleSearch}>

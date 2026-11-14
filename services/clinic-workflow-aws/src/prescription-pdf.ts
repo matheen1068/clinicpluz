@@ -1,5 +1,5 @@
 import { PDFDocument, StandardFonts } from 'pdf-lib';
-import type { Medication } from './consultation.ts';
+import type { FollowUp, Medication } from './consultation.ts';
 
 export interface PrescriptionDocument {
   clinic: { slug: string; displayName: string; address?: string | null; phone?: string | null;
@@ -9,6 +9,7 @@ export interface PrescriptionDocument {
   appointmentDate: string;
   finalizedAt: string;
   medications: Medication[];
+  followUp?: FollowUp | null;
 }
 
 export class UnsupportedPrescriptionText extends Error {}
@@ -66,6 +67,11 @@ export async function renderPrescriptionPdf(document: PrescriptionDocument,
     }
     lines.push(`Duration: ${printable(medication.duration)}`,
       `Instructions: ${printable(medication.instructions)}`);
+  }
+  if (document.followUp) {
+    lines.push('', 'NEXT VISIT', `Come back on: ${printable(document.followUp.date)}`,
+      ...(document.followUp.purpose ? [`Purpose: ${printable(document.followUp.purpose)}`] : []),
+      ...(document.followUp.bring ? [`Please bring: ${printable(document.followUp.bring)}`] : []));
   }
   lines.push('', 'This document is a synthetic staging demonstration only.');
 

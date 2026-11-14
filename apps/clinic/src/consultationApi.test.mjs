@@ -256,3 +256,13 @@ test('invalid clinic, appointment, date, revision, and missing CSRF never reach 
     assert.equal(calls, 0);
   } finally { restore(); }
 });
+
+test('follow-up responses are strictly parsed and printable plan must match', async () => {
+  const { parseFollowUp } = await import('./consultationApi.ts');
+  assert.equal(parseFollowUp(undefined), null);
+  assert.equal(parseFollowUp(null), null);
+  assert.deepEqual(parseFollowUp({ date: '2026-12-05', purpose: 'Review', bring: 'Report' }), { date: '2026-12-05', purpose: 'Review', bring: 'Report' });
+  for (const bad of [{ date: 'tomorrow', purpose: '', bring: '' }, { date: '2026-12-05', purpose: 1, bring: '' }, { date: '2026-12-05', purpose: 'x'.repeat(301), bring: '' }, 'soon']) {
+    assert.throws(() => parseFollowUp(bad), ConsultationApiError);
+  }
+});

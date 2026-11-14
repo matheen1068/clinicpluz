@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
-import { EMPTY_NOTE, medicationForDisplay, parseMedications, parseNote, parseVitals, readyToFinalize,
+import { EMPTY_NOTE, medicationForDisplay, parseFollowUp, parseMedications, parseNote, parseVitals, readyToFinalize,
   type Encounter } from './consultation.ts';
 import { historyIdFor, validHistoryId, type HistoryEntry } from './history.ts';
 import { renderPrescriptionPdf, UnsupportedPrescriptionText } from './prescription-pdf.ts';
@@ -243,6 +243,7 @@ function printablePrescription(encounter: Encounter, profile: ClinicProfile, pat
     patient: { id: patient.id, fullName: patient.fullName, ageYears: patient.ageYears, sex: patient.sex },
     appointmentDate: encounter.clinicDate, finalizedAt: encounter.finalizedAt,
     medications: encounter.medications.map(medicationForDisplay),
+    followUp: encounter.followUp ?? null,
   };
 }
 function finalizedPrescriptionMatches(encounter: Encounter | null, appointment: Appointment): encounter is Encounter {
@@ -281,7 +282,7 @@ function consultationResponse(encounter: Encounter, profile: ClinicProfile, pati
   const publicEncounter: Record<string, unknown> = {
     appointmentId: encounter.appointmentId, clinicDate: encounter.clinicDate,
     status: encounter.status, revision: encounter.revision, vitals: encounter.vitals,
-    finalizedAt: encounter.finalizedAt,
+    finalizedAt: encounter.finalizedAt, followUp: encounter.followUp ?? null,
     patient: { id: patient.id, fullName: patient.fullName, ageYears: patient.ageYears, sex: patient.sex, allergies: patient.allergies ?? null },
     doctor: shownDoctor,
     clinic: { slug: profile.slug, displayName: profile.displayName },
@@ -386,7 +387,11 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
           // checked against the Control Panel-owned PROFILE_ACCESS record below.
         } else if (isBilling) {
           const doctorFee = endpoint === 'billing/consultation-fee/read' || endpoint === 'billing/consultation-charge';
-          if (endpoint.startsWith('billing/fulfillment') ? member.role !== 'pharmacist' :
+          // Reception/admin may call only the plain close route (never fulfillment/read); billing-routes.ts
+          // further limits them to closing with no items and the explicit patient_buys_outside reason.
+          const receptionOutsideClose = endpoint === 'billing/fulfillment' &&
+            (member.role === 'clinic_admin' || member.role === 'receptionist');
+          if (endpoint.startsWith('billing/fulfillment') ? member.role !== 'pharmacist' && !receptionOutsideClose :
               member.role !== 'clinic_admin' && member.role !== 'receptionist' &&
               !(doctorFee && member.role === 'doctor')) {
             return result(403, { error: 'Role not allowed' });
@@ -699,7 +704,7 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
           const found = await resolveFinalizedPrescription(store, clinicSlug, request.appointmentId, request.clinicDate);
           if (!found) return result(404, { error: 'Prescription not found' });
           const profile = await currentProfile(store, clinic);
-          return result(200, { status: 'finalized',
+          return result(200, { status: 'finalized', prescriptionRevision: found.encounter.revision,
             printablePrescription: printablePrescription(found.encounter, profile, found.patient) });
         }
         if (input.method === 'POST' && isPrescriptionEmail && !(input.queryString ?? '')) {
@@ -879,7 +884,7 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
           const fields = ['appointmentId', 'clinicDate'];
           const required = action === 'read' ? fields : [...fields, 'expectedRevision',
             ...(action === 'vitals' ? ['vitals'] : action === 'draft' ? ['note', 'medications'] : [])];
-          if (!request || !hasOnly(request, required) ||
+          if (!request || !hasOnly(request, required, action === 'draft' ? ['followUp'] : []) ||
               typeof request.appointmentId !== 'string' || !ID.test(request.appointmentId) ||
               typeof request.clinicDate !== 'string' || !calendarDate(request.clinicDate)) {
             return result(400, { error: 'Invalid consultation request' });
@@ -933,7 +938,10 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
             const note = parseNote(request.note);
             const medications = parseMedications(request.medications, session.sub, appointment.id, timestamp);
             if (!note || !medications) return result(400, { error: 'Invalid consultation draft' });
-            next = { ...current, note, medications, noteAuthorSub: session.sub,
+            // Omitted followUp keeps what is saved; null clears it.
+            const followUp = 'followUp' in request ? parseFollowUp(request.followUp, request.clinicDate) : (current.followUp ?? null);
+            if (followUp === false) return result(400, { error: 'Invalid follow-up plan' });
+            next = { ...current, note, medications, followUp, noteAuthorSub: session.sub,
               revision: current.revision + 1, updatedAt: timestamp.toISOString() };
             auditAction = 'draft.saved';
           } else if (action === 'finalize') {

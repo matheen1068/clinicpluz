@@ -4,7 +4,8 @@ import {
   ConsultationApiError, finalizeEncounter, getConsultationQueue, readEncounter, saveDraft, saveVitals,
   type ConsultationNote, type ConsultationQueueItem, type Encounter, type Medication,
 } from './consultationApi';
-import { completeForFinalize, emptyMedication, emptyNote, mergeRecoveredFields, parseVitalForm, snapshotEdits, VITAL_FIELDS, vitalFormFrom, type RecoverySnapshot, type VitalForm } from './consultationForm';
+import FollowUpPlan, { formatDay } from './FollowUpPlan';
+import { completeForFinalize, emptyFollowUp, emptyMedication, emptyNote, followUpFormFrom, followUpPayload, followUpProblem, mergeRecoveredFields, parseVitalForm, snapshotEdits, VITAL_FIELDS, vitalFormFrom, type FollowUpForm, type RecoverySnapshot, type VitalForm } from './consultationForm';
 import { pilotDateToday } from './workflowApi';
 import { AllergyBanner } from './AllergyBanner';
 import { MedicineEntry } from './MedicineEntry';
@@ -92,6 +93,8 @@ function ConsultationDesk({ clinicSlug, csrfToken, role, onSessionLost, onDirtyC
   const [noteBaseline, setNoteBaseline] = useState<ConsultationNote>(emptyNote);
   const [medications, setMedications] = useState<Medication[]>([]);
   const [medicationBaseline, setMedicationBaseline] = useState<Medication[]>([]);
+  const [followUp, setFollowUp] = useState<FollowUpForm>(emptyFollowUp);
+  const [followUpBaseline, setFollowUpBaseline] = useState<FollowUpForm>(emptyFollowUp);
   const [pending, setPending] = useState<'vitals' | 'draft' | 'finalize' | null>(null);
   const [feePending, setFeePending] = useState(false);
   const [actionError, setActionError] = useState('');
@@ -104,7 +107,7 @@ function ConsultationDesk({ clinicSlug, csrfToken, role, onSessionLost, onDirtyC
 
   const vitalDirty = !!encounter && JSON.stringify(vitalForm) !== JSON.stringify(vitalBaseline);
   const noteDirty = !!encounter && doctorRole && (JSON.stringify(note) !== JSON.stringify(noteBaseline) ||
-    JSON.stringify(medications) !== JSON.stringify(medicationBaseline));
+    JSON.stringify(medications) !== JSON.stringify(medicationBaseline) || JSON.stringify(followUp) !== JSON.stringify(followUpBaseline));
   const dirty = vitalDirty || noteDirty;
   const navigationRisk = dirty || needsReload || recoverySnapshot !== null;
   const navigationRiskRef = useRef(navigationRisk);
@@ -138,7 +141,7 @@ function ConsultationDesk({ clinicSlug, csrfToken, role, onSessionLost, onDirtyC
       const blankNote = emptyNote();
       setVitalForm(blankVitals); setVitalBaseline(blankVitals);
       setNote(blankNote); setNoteBaseline(blankNote);
-      setMedications([]); setMedicationBaseline([]);
+      setMedications([]); setMedicationBaseline([]); setFollowUp(emptyFollowUp()); setFollowUpBaseline(emptyFollowUp());
       setNeedsReload(false); setActionError(''); setActionSuccess(''); setConfirmFinal(false);
       return true;
     }
@@ -175,6 +178,8 @@ function ConsultationDesk({ clinicSlug, csrfToken, role, onSessionLost, onDirtyC
     setNote(nextNote); setNoteBaseline(nextNote);
     const nextMedications = value.medications ?? [];
     setMedications(nextMedications); setMedicationBaseline(nextMedications);
+    const nextFollowUp = followUpFormFrom(value.followUp);
+    setFollowUp(nextFollowUp); setFollowUpBaseline(nextFollowUp);
   }
   function matchesSelection(value: Encounter, item: ConsultationQueueItem): boolean {
     return value.appointmentId === item.appointmentId && value.clinicDate === item.clinicDate &&
@@ -307,11 +312,15 @@ function ConsultationDesk({ clinicSlug, csrfToken, role, onSessionLost, onDirtyC
     if (!doctorRole || !selected || !encounter || pending || encounter.status === 'finalized' || needsReload) return;
     if (medications.length > 20) { setActionError('Use at most 20 doctor-entered medication entries.'); return; }
     if (medications.some((medication) => !medication.name.trim())) { setActionError('Enter a name for each medicine or remove its empty row.'); return; }
+    const followUpIssue = followUpProblem(followUp, selected.clinicDate);
+    if (followUpIssue) { setActionError(followUpIssue); return; }
     setPending('draft'); setActionError(''); setActionSuccess(''); setConfirmFinal(false);
     try {
-      const saved = await saveDraft(clinicSlug, selected.appointmentId, selected.clinicDate, encounter.revision, note, medications, csrfToken);
+      const saved = await saveDraft(clinicSlug, selected.appointmentId, selected.clinicDate, encounter.revision, note, medications, csrfToken, followUpPayload(followUp));
       if (!matchesSelection(saved, selected)) throw new ConsultationApiError(null, 'Visit identity mismatch');
       setEncounter(saved);
+      const nextFollowUp = followUpFormFrom(saved.followUp);
+      setFollowUp(nextFollowUp); setFollowUpBaseline(nextFollowUp);
       const nextNote = saved.note ?? emptyNote();
       const nextMedications = saved.medications ?? [];
       setNote(nextNote); setNoteBaseline(nextNote);
@@ -403,13 +412,14 @@ function ConsultationDesk({ clinicSlug, csrfToken, role, onSessionLost, onDirtyC
 
           {doctorRole && doctorSection === 'medicines' && encounter.note && encounter.medications && <section className="workflow-card consultation-section" aria-labelledby="medicines-heading">
             <div className="workflow-card-head"><div><span className="workflow-step">04</span><h4 id="medicines-heading">Prescription</h4></div><p>Only the assigned doctor enters medicines. Save them with the consultation draft.</p></div>
-            {encounter.status === 'finalized' ? <div className="consultation-readonly">{encounter.medications.length === 0 ? <p>No medicines recorded.</p> : encounter.medications.map((medicine, index) => <div className="consultation-med-read" key={index}><strong>{index + 1}. {medicine.name} {medicine.strength}</strong><p>{medicine.dose} · {medicine.route} · {medicationTimingText(medicine)} · {medicine.duration}</p><p>{medicine.instructions}</p></div>)}</div> : <form onSubmit={handleDraft} aria-busy={pending === 'draft'}>
+            {encounter.status === 'finalized' ? <div className="consultation-readonly">{encounter.medications.length === 0 ? <p>No medicines recorded.</p> : encounter.medications.map((medicine, index) => <div className="consultation-med-read" key={index}><strong>{index + 1}. {medicine.name} {medicine.strength}</strong><p>{medicine.dose} · {medicine.route} · {medicationTimingText(medicine)} · {medicine.duration}</p><p>{medicine.instructions}</p></div>)}{encounter.followUp && <div className="consultation-med-read"><strong>Next visit: {formatDay(encounter.followUp.date)}</strong>{encounter.followUp.purpose && <p>Purpose: {encounter.followUp.purpose}</p>}{encounter.followUp.bring && <p>Bring: {encounter.followUp.bring}</p>}</div>}</div> : <form onSubmit={handleDraft} aria-busy={pending === 'draft'}>
               <div className="consultation-meds-head"><h5>Doctor-entered prescription items</h5><button type="button" className="workflow-link" disabled={!!pending || needsReload || medications.length >= 20} onClick={() => setMedications([...medications, emptyMedication()])}>Add medicine</button></div>
               {medications.length === 0 && <p className="workflow-empty">No medicine entries. A consultation may be finalized without a prescription.</p>}
               {medications.map((medicine, index) => <MedicineEntry key={index} clinicSlug={clinicSlug} csrfToken={csrfToken}
                 index={index} medicine={medicine} allergies={encounter.patient.allergies} disabled={!!pending || needsReload} onSessionLost={onSessionLost}
                 onChange={(value) => setMedications((current) => current.map((item, itemIndex) => itemIndex === index ? value : item))}
                 onRemove={() => setMedications((current) => current.filter((_, itemIndex) => itemIndex !== index))} />)}
+              <FollowUpPlan value={followUp} clinicDate={encounter.clinicDate} disabled={!!pending || needsReload} onChange={setFollowUp} />
               <button className="workflow-action consultation-save" type="submit" disabled={!!pending || needsReload || !noteDirty}>Save prescription draft</button>
             </form>}
           </section>}
