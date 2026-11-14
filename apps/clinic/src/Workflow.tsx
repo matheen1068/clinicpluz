@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import type { ClinicRole } from './api';
 import { addConsultationCharge, BillingApiError, checkInAppointment, listBillingEpisodes, type Episode } from './billingApi';
 import { formatPaise, rupeesToPaise } from './billingMoney';
+import { parseAllergyInput } from './allergyCheck';
 import {
   createAppointment, getAppointments, getDoctors, pilotDateToday, pilotSlotHasEnded, pilotSlotToIso,
   registerPatient, searchPatients, WorkflowApiError,
@@ -67,6 +68,8 @@ function WorkflowDesk({ clinicSlug, csrfToken, role, onSessionLost, onPendingCha
   const [phone, setPhone] = useState('');
   const [ageYears, setAgeYears] = useState('');
   const [sex, setSex] = useState<PatientSex | ''>('');
+  const [allergyText, setAllergyText] = useState('');
+  const [noAllergies, setNoAllergies] = useState(false);
   const [email, setEmail] = useState('');
   const [registering, setRegistering] = useState(false);
   const [registerError, setRegisterError] = useState('');
@@ -190,7 +193,7 @@ function WorkflowDesk({ clinicSlug, csrfToken, role, onSessionLost, onPendingCha
     setPhone(contact?.phone ?? '');
     setAgeYears('');
     setSex('');
-    setEmail('');
+    setEmail(''); setAllergyText(''); setNoAllergies(false);
     setSearchError('');
     setRegisterError('');
     setBookingError('');
@@ -206,12 +209,16 @@ function WorkflowDesk({ clinicSlug, csrfToken, role, onSessionLost, onPendingCha
       return;
     }
     if (!sex) { setRegisterError('Select a sex value, including “Prefer not to say” if appropriate.'); return; }
+    const allergyList = parseAllergyInput(allergyText);
+    if (noAllergies && allergyList.length > 0) { setRegisterError('Clear the allergy list or untick “No known allergies”.'); return; }
+    if (allergyList.length > 10 || allergyList.some((item) => item.length < 2 || item.length > 60)) { setRegisterError('Enter up to 10 allergies, each 2 to 60 characters.'); return; }
     setRegistering(true);
     setRegisterError('');
     try {
       const patient = await registerPatient(clinicSlug, {
         fullName: fullName.trim(), phone: phone.trim(), ageYears: age, sex,
         ...(email.trim() ? { email: email.trim() } : {}),
+        ...(noAllergies ? { allergies: [] } : allergyList.length ? { allergies: allergyList } : {}),
         ...(contactPatient ? { contactPatientId: contactPatient.id } : {}),
       }, csrfToken);
       setSelectedPatient(patient);
@@ -223,7 +230,7 @@ function WorkflowDesk({ clinicSlug, csrfToken, role, onSessionLost, onPendingCha
       setResults([]);
       setSearched(false);
       setContactPatient(null);
-      setFullName(''); setPhone(''); setAgeYears(''); setSex(''); setEmail('');
+      setFullName(''); setPhone(''); setAgeYears(''); setSex(''); setEmail(''); setAllergyText(''); setNoAllergies(false);
     } catch (error) {
       if (!handleAccessError(error)) setRegisterError(error instanceof WorkflowApiError && error.status === 400 && contactPatient
         ? 'Registration was rejected. Check the details and search for the shared contact again; its number or clinic record may have changed.'
@@ -314,12 +321,12 @@ function WorkflowDesk({ clinicSlug, csrfToken, role, onSessionLost, onPendingCha
             </form>
             {searchError && <p className="workflow-error" role="alert">{searchError}</p>}
             {searched && results.length === 0 && <p className="workflow-empty" role="status">No matching patients found. {canBook ? 'Register a new patient if needed.' : ''}</p>}
-            {results.length > 0 && <><p className="workflow-hint">Several patients may share one contact number. Check the patient ID before booking.</p><div className="patient-results" role="region" aria-label="Patient search results">{results.map((patient) => <div className="patient-result" key={patient.id}><div><strong>{patient.fullName}</strong><span>{patient.phone} · {patient.ageYears} years at registration · {SEX_LABELS[patient.sex]}</span><small className="patient-id">Patient ID: <code>{patient.id}</code></small></div>{canBook && <div className="patient-result-actions"><button type="button" aria-label={`Select patient ${patient.fullName}, ID ${patient.id}`} onClick={() => { setSelectedPatient(patient); setRegisteredPatientId(null); setBookingError(''); setBookingSuccess(''); }} disabled={booking || selectedPatient?.id === patient.id}>{selectedPatient?.id === patient.id ? 'Selected' : 'Select for visit'}</button><button type="button" aria-label={`Use ${patient.fullName}'s contact phone for another patient`} onClick={() => startNewRegistration(patient)} disabled={booking}>Use contact for new patient</button></div>}</div>)}</div></>}
+            {results.length > 0 && <><p className="workflow-hint">Several patients may share one contact number. Check the patient ID before booking.</p><div className="patient-results" role="region" aria-label="Patient search results">{results.map((patient) => <div className="patient-result" key={patient.id}><div><strong>{patient.fullName}</strong><span>{patient.phone} · {patient.ageYears} years at registration · {SEX_LABELS[patient.sex]}</span><span className="patient-allergy-line">{patient.allergies === null ? 'Allergies: not recorded' : patient.allergies.length === 0 ? 'Allergies: none known' : `Allergies: ${patient.allergies.join(', ')}`}</span><small className="patient-id">Patient ID: <code>{patient.id}</code></small></div>{canBook && <div className="patient-result-actions"><button type="button" aria-label={`Select patient ${patient.fullName}, ID ${patient.id}`} onClick={() => { setSelectedPatient(patient); setRegisteredPatientId(null); setBookingError(''); setBookingSuccess(''); }} disabled={booking || selectedPatient?.id === patient.id}>{selectedPatient?.id === patient.id ? 'Selected' : 'Select for visit'}</button><button type="button" aria-label={`Use ${patient.fullName}'s contact phone for another patient`} onClick={() => startNewRegistration(patient)} disabled={booking}>Use contact for new patient</button></div>}</div>)}</div></>}
             {selectedPatient && canBook && <div className="workflow-selected" role="status"><strong>{registeredPatientId === selectedPatient.id ? 'New patient registered and selected' : 'Selected patient'}: {selectedPatient.fullName}</strong><span className="patient-id">Patient ID: <code>{selectedPatient.id}</code></span><small>Bookings use this patient ID; a shared phone number does not merge records.</small></div>}
           </> : <form className="workflow-form workflow-register" onSubmit={handleRegister} aria-busy={registering}>
             <p className="workflow-hint">Create a separate patient record, including for a child or another person who uses an existing contact number. Search and choose “Use contact for new patient” to link that number.</p>
             {contactPatient && <div className="workflow-contact-source" role="status"><div><strong>Using contact phone from {contactPatient.fullName}</strong><span className="patient-id">Existing patient ID: <code>{contactPatient.id}</code></span><span>Only the phone number is copied. No email, medical details, or relationship is copied.</span></div><button type="button" className="workflow-link" onClick={() => { setContactPatient(null); setPhone(''); setRegisterError(''); }} disabled={registering}>Use a different phone</button></div>}
-            <div className="workflow-fields"><label>Full name<input value={fullName} onChange={(event) => setFullName(event.target.value)} autoComplete="off" maxLength={120} required disabled={registering} /></label><label>Contact phone number<input type="tel" value={phone} onChange={(event) => setPhone(event.target.value)} autoComplete="off" maxLength={25} required disabled={registering} readOnly={!!contactPatient} /></label><label>Age in years<input type="number" min="0" max="120" step="1" value={ageYears} onChange={(event) => setAgeYears(event.target.value)} required disabled={registering} /></label><label>Sex<select value={sex} onChange={(event) => setSex(event.target.value as PatientSex | '')} required disabled={registering}><option value="" disabled>Choose one</option><option value="female">Female</option><option value="male">Male</option><option value="other">Other</option><option value="undisclosed">Prefer not to say</option></select></label><label className="workflow-span">Email <span className="workflow-optional">optional</span><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="off" maxLength={254} disabled={registering} /></label></div>
+            <div className="workflow-fields"><label>Full name<input value={fullName} onChange={(event) => setFullName(event.target.value)} autoComplete="off" maxLength={120} required disabled={registering} /></label><label>Contact phone number<input type="tel" value={phone} onChange={(event) => setPhone(event.target.value)} autoComplete="off" maxLength={25} required disabled={registering} readOnly={!!contactPatient} /></label><label>Age in years<input type="number" min="0" max="120" step="1" value={ageYears} onChange={(event) => setAgeYears(event.target.value)} required disabled={registering} /></label><label>Sex<select value={sex} onChange={(event) => setSex(event.target.value as PatientSex | '')} required disabled={registering}><option value="" disabled>Choose one</option><option value="female">Female</option><option value="male">Male</option><option value="other">Other</option><option value="undisclosed">Prefer not to say</option></select></label><label className="workflow-span">Email <span className="workflow-optional">optional</span><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="off" maxLength={254} disabled={registering} /></label><label className="workflow-span">Known allergies <span className="workflow-optional">optional, separate with commas</span><input value={allergyText} onChange={(event) => setAllergyText(event.target.value)} autoComplete="off" maxLength={400} placeholder="For example: Penicillin, Peanut oil" disabled={registering || noAllergies} /></label><label className="workflow-span workflow-check"><input type="checkbox" checked={noAllergies} onChange={(event) => setNoAllergies(event.target.checked)} disabled={registering} /> No known allergies (asked and confirmed)</label></div>
             {registerError && <p className="workflow-error" role="alert">{registerError}</p>}
             <button className="workflow-action" type="submit" disabled={registering}>{registering ? 'Saving patient…' : 'Register and select patient'}</button>
           </form>}

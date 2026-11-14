@@ -51,7 +51,7 @@ export interface Medication {
   timing: MedicationTiming | null;
 }
 export interface MedicineCatalogItem { id: string; name: string; strength: string; favorite: boolean }
-export interface PersonIdentity { id: string; fullName: string; ageYears: number; sex: string }
+export interface PersonIdentity { id: string; fullName: string; ageYears: number; sex: string; allergies?: string[] | null }
 export interface DoctorIdentity { id: string; displayName: string }
 export interface ClinicIdentity { slug: string; displayName: string }
 export interface PrintableClinicIdentity extends ClinicIdentity {

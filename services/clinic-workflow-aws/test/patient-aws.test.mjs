@@ -114,3 +114,20 @@ test('older patient rows without contactPatientId read as unlinked', async () =>
   const store = new DynamoWorkflowStore(client, 'clinical-staging');
   assert.equal((await store.getPatient('goodwell', 'legacy-1')).contactPatientId, null);
 });
+
+test('allergies round-trip through Dynamo as a list; legacy rows and unrecorded patients read as not recorded', async () => {
+  const client = memoryClient();
+  const store = new DynamoWorkflowStore(client, 'clinical-staging');
+  const base = { phone: '+91 98765 43210', ageYears: 30, sex: 'male', email: null, contactPatientId: null,
+    registeredAt: '2026-11-15T09:00:00.000Z' };
+  await store.createPatient('goodwell', { ...base, id: 'a-1', fullName: 'Demo Allergic', allergies: ['Penicillin', 'Peanut oil'] },
+    'demo allergic', '919876543210', 'staff-1', null);
+  await store.createPatient('goodwell', { ...base, id: 'a-2', fullName: 'Demo None', allergies: [] },
+    'demo none', '919876543211', 'staff-1', null);
+  await store.createPatient('goodwell', { ...base, id: 'a-3', fullName: 'Demo Unrecorded' },
+    'demo unrecorded', '919876543212', 'staff-1', null);
+  assert.deepEqual((await store.getPatient('goodwell', 'a-1')).allergies, ['Penicillin', 'Peanut oil']);
+  // An empty list is stored as an empty L value only if truthy; [] is truthy so it round-trips as none known.
+  assert.deepEqual((await store.getPatient('goodwell', 'a-2')).allergies, []);
+  assert.equal((await store.getPatient('goodwell', 'a-3')).allergies, undefined);
+});

@@ -22,6 +22,8 @@ export interface Schedule { timezone: string; openMinute: number; closeMinute: n
 export interface Patient {
   id: string; fullName: string; phone: string; ageYears: number; sex: Sex;
   email: string | null; contactPatientId: string | null; registeredAt: string;
+  /** undefined/null = not recorded; [] = recorded as no known allergies. */
+  allergies?: string[] | null;
 }
 export interface Appointment {
   id: string; patientId: string; patientName: string; doctorId: string; doctorName: string;
@@ -161,6 +163,21 @@ function cleanName(value: unknown): string | null {
   const clean = value.trim().replace(/\s+/g, ' ');
   return clean.length >= 2 && clean.length <= 120 && /^[\p{L}\p{M}][\p{L}\p{M}\p{N} .'-]*$/u.test(clean) ? clean : null;
 }
+/** Returns undefined when absent, null when invalid, otherwise a cleaned, de-duplicated list (max 10 items, 2-60 chars). */
+function cleanAllergies(value: unknown): string[] | null | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value) || value.length > 10) return null;
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of value) {
+    if (typeof raw !== 'string') return null;
+    const clean = raw.trim().replace(/\s+/g, ' ');
+    if (clean.length < 2 || clean.length > 60 || !/^[\p{L}\p{M}\p{N}][\p{L}\p{M}\p{N} .,'()/+-]*$/u.test(clean)) return null;
+    const key = clean.toLocaleLowerCase('en-US');
+    if (!seen.has(key)) { seen.add(key); out.push(clean); }
+  }
+  return out;
+}
 function nameIndex(value: string): string { return value.normalize('NFKC').toLocaleLowerCase('en-US'); }
 function phone(value: unknown): { display: string; digits: string } | null {
   if (typeof value !== 'string' || !/^\+?[0-9][0-9 ()-]{5,22}$/.test(value.trim())) return null;
@@ -209,8 +226,8 @@ function startTime(value: unknown, schedule: Schedule): { startAt: string; start
   return { startAt: value, startUtc: parsed.toISOString(), clinicDate: localDate };
 }
 function publicPatient(patient: Patient) {
-  const { id, fullName, phone, ageYears, sex, email, contactPatientId } = patient;
-  return { id, fullName, phone, ageYears, sex, email, contactPatientId: contactPatientId ?? null };
+  const { id, fullName, phone, ageYears, sex, email, contactPatientId, allergies } = patient;
+  return { id, fullName, phone, ageYears, sex, email, contactPatientId: contactPatientId ?? null, allergies: allergies ?? null };
 }
 function publicAppointment(appointment: Appointment) {
   const { id, patientId, patientName, doctorId, doctorName, startAt, source, status } = appointment;
@@ -265,7 +282,7 @@ function consultationResponse(encounter: Encounter, profile: ClinicProfile, pati
     appointmentId: encounter.appointmentId, clinicDate: encounter.clinicDate,
     status: encounter.status, revision: encounter.revision, vitals: encounter.vitals,
     finalizedAt: encounter.finalizedAt,
-    patient: { id: patient.id, fullName: patient.fullName, ageYears: patient.ageYears, sex: patient.sex },
+    patient: { id: patient.id, fullName: patient.fullName, ageYears: patient.ageYears, sex: patient.sex, allergies: patient.allergies ?? null },
     doctor: shownDoctor,
     clinic: { slug: profile.slug, displayName: profile.displayName },
   };
@@ -583,13 +600,14 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
         }
         if (input.method === 'POST' && endpoint === 'patients' && !(input.queryString ?? '')) {
           const request = body(input);
-          if (!request || !hasOnly(request, ['fullName', 'phone', 'ageYears', 'sex'], ['email', 'contactPatientId'])) {
+          if (!request || !hasOnly(request, ['fullName', 'phone', 'ageYears', 'sex'], ['email', 'contactPatientId', 'allergies'])) {
             return result(400, { error: 'Invalid patient' });
           }
           const fullName = cleanName(request.fullName);
           const number = phone(request.phone);
           const patientEmail = email(request.email);
-          if (!fullName || !number || patientEmail === undefined ||
+          const allergies = cleanAllergies(request.allergies);
+          if (!fullName || !number || patientEmail === undefined || allergies === null ||
               !Number.isInteger(request.ageYears) || typeof request.ageYears !== 'number' ||
               request.ageYears < 0 || request.ageYears > 130 || !SEXES.has(request.sex as Sex) ||
               (request.contactPatientId !== undefined && request.contactPatientId !== null &&
@@ -606,6 +624,7 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
             id: randomUUID(), fullName, phone: number.display, ageYears: request.ageYears,
             sex: request.sex as Sex, email: patientEmail, contactPatientId: contact?.id ?? null,
             registeredAt: now().toISOString(),
+            ...(allergies !== undefined ? { allergies } : {}),
           };
           await store.createPatient(clinicSlug, patient, nameIndex(fullName), number.digits, session.sub,
             contact ? { id: contact.id, phone: contact.phone } : null);

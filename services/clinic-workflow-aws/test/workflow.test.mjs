@@ -467,6 +467,23 @@ test('patient search stays in a CSRF-protected POST body and registration valida
   assert.equal(world.audit.length, 2);
 });
 
+test('patient allergies are optional, validated, de-duplicated, and distinguish "not recorded" from "none known"', async () => {
+  const world = setup();
+  const path = `${ROOT}/goodwell/patients`;
+  const withAllergies = await world.call('POST', path, { ...patient, allergies: ['  Penicillin ', 'penicillin', 'Peanut  oil'] });
+  assert.equal(withAllergies.status, 201);
+  assert.deepEqual(withAllergies.body.patient.allergies, ['Penicillin', 'Peanut oil']);
+  const none = await world.call('POST', path, { ...patient, phone: '+91 98765 43299', allergies: [] });
+  assert.equal(none.status, 201);
+  assert.deepEqual(none.body.patient.allergies, []);
+  const unrecorded = await world.call('POST', path, { ...patient, phone: '+91 98765 43288' });
+  assert.equal(unrecorded.status, 201);
+  assert.equal(unrecorded.body.patient.allergies, null);
+  for (const bad of ['Penicillin', [1], ['x'], ['<script>'], Array.from({ length: 11 }, (_, i) => `Drug ${i}`), ['a'.repeat(61)]]) {
+    assert.equal((await world.call('POST', path, { ...patient, phone: '+91 98765 43277', allergies: bad })).status, 400);
+  }
+});
+
 test('same-phone patients get distinct persisted IDs and an optional same-clinic contact link without email inheritance', async () => {
   const world = setup();
   const path = `${ROOT}/goodwell/patients`;
