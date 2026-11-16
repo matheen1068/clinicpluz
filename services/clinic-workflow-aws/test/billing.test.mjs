@@ -307,6 +307,50 @@ test('dashboard counts clinic visits while doctor sees only assigned visits', as
   assert.equal(completed.body.counts.booked, 0);
 });
 
+test('daybook lists visits and money for a range; doctor sees only own visits and consultation fee', async () => {
+  const world = setupBilling();
+  world.visits.get('goodwell').push({ ...appointment, id: 'visit-2', doctorId: 'other-doctor', doctorName: 'Dr Other',
+    status: 'checked_in', source: 'walk_in' });
+  assert.equal((await world.call('POST', `${API}/appointments/check-in`, { ...selected, operationId: IDS.checkIn })).status, 200);
+  assert.equal((await world.call('POST', `${API}/billing/consultation-charge`,
+    { ...selected, operationId: IDS.fee, expectedRevision: 1, amountPaise: 100_000 })).status, 200);
+  assert.equal((await world.call('POST', `${API}/billing/payments`,
+    { ...selected, operationId: IDS.prepayment, expectedRevision: 2, amountPaise: 60_000, method: 'upi' })).status, 200);
+  assert.equal((await world.call('POST', `${API}/billing/payments`,
+    { ...selected, operationId: IDS.balancePayment, expectedRevision: 3, amountPaise: 40_000, method: 'cash' })).status, 200);
+  world.finalize();
+  const range = 'from=2026-10-10&to=2026-10-15';
+  const clinic = await world.call('GET', `${API}/daybook`, undefined, { queryString: range });
+  assert.equal(clinic.status, 200, JSON.stringify(clinic.body));
+  assert.equal(clinic.body.scope, 'clinic');
+  assert.equal(clinic.body.rows.length, 2);
+  const paid = clinic.body.rows.find((row) => row.appointmentId === appointment.id);
+  assert.equal(paid.completed, true);
+  assert.equal(paid.attended, true);
+  assert.equal(paid.consultationPaise, 100_000);
+  assert.equal(paid.paidPaise, 100_000);
+  assert.deepEqual(paid.methods, { cash: 40_000, upi: 60_000, card: 0 });
+  const other = clinic.body.rows.find((row) => row.appointmentId === 'visit-2');
+  assert.equal(other.completed, false);
+  assert.equal(other.consultationPaise, null);
+
+  const doctor = await world.call('GET', `${API}/daybook`, undefined, { role: 'doctor', queryString: range });
+  assert.equal(doctor.status, 200);
+  assert.equal(doctor.body.scope, 'doctor');
+  assert.equal(doctor.body.rows.length, 1);
+  assert.equal(doctor.body.rows[0].consultationPaise, 100_000);
+  assert.equal('paidPaise' in doctor.body.rows[0], false);
+  assert.equal('methods' in doctor.body.rows[0], false);
+
+  for (const bad of ['from=2026-10-15&to=2026-10-10', 'from=2026-09-01&to=2026-10-15', 'from=2026-10-15', 'from=x&to=y',
+    'from=2026-10-10&to=2026-10-15&doctorId=1']) {
+    assert.equal((await world.call('GET', `${API}/daybook`, undefined, { queryString: bad })).status, 400, bad);
+  }
+  for (const role of ['nurse', 'pharmacist']) {
+    assert.equal((await world.call('GET', `${API}/daybook`, undefined, { role, queryString: range })).status, 403);
+  }
+});
+
 test('doctor fee read and write fail when roster binding changes', async () => {
   const world = setupBilling();
   world.visits.get('goodwell')[0].status = 'checked_in';

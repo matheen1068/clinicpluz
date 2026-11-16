@@ -350,7 +350,7 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
       try {
         if (!safeEqual(input.headers['x-clinicpluz-edge-key'] ?? '', config.edgeKey)) return result(403, { error: 'Forbidden' });
         if (input.headers.origin && input.headers.origin !== config.publicOrigin) return result(403, { error: 'Origin rejected' });
-        const match = /^\/api\/workflow\/clinics\/([a-z0-9-]+)\/(profile(?:\/logo(?:\/(?:prepare|complete))?)?|dashboard|doctors|patients(?:\/search)?|appointments(?:\/check-in)?|billing\/(?:config|episodes|read|consultation-fee\/read|consultation-charge|fulfillment(?:\/read)?|payments|receipt)|consultations(?:\/(?:read|vitals|draft|finalize|medicines\/search|history\/(?:list|detail)|prescriptions(?:\/read|\/email(?:\/preview)?)?))?)$/.exec(input.path);
+        const match = /^\/api\/workflow\/clinics\/([a-z0-9-]+)\/(profile(?:\/logo(?:\/(?:prepare|complete))?)?|dashboard|daybook|doctors|patients(?:\/search)?|appointments(?:\/check-in)?|billing\/(?:config|episodes|read|consultation-fee\/read|consultation-charge|fulfillment(?:\/read)?|payments|receipt)|consultations(?:\/(?:read|vitals|draft|finalize|medicines\/search|history\/(?:list|detail)|prescriptions(?:\/read|\/email(?:\/preview)?)?))?)$/.exec(input.path);
         if (!match || !slug(match[1])) return result(404, { error: 'Not found' });
         const clinicSlug = match[1];
         const endpoint = match[2];
@@ -412,7 +412,7 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
               member.role !== 'doctor') {
             return result(403, { error: 'Role not allowed' });
           }
-        } else if (endpoint === 'dashboard') {
+        } else if (endpoint === 'dashboard' || endpoint === 'daybook') {
           if (member.role !== 'clinic_admin' && member.role !== 'receptionist' && member.role !== 'doctor') {
             return result(403, { error: 'Role not allowed' });
           }
@@ -564,6 +564,63 @@ export function createWorkflowApp(auth: AuthStore, identity: StaffIdentity, stor
             else counts.booked += 1;
           }
           return result(200, { date, scope: member.role === 'doctor' ? 'doctor' : 'clinic', counts });
+        }
+
+        if (endpoint === 'daybook' && input.method === 'GET') {
+          // Read-only day-by-day record of visits and money for up to 31 clinic days.
+          const query = new URLSearchParams(input.queryString ?? '');
+          const from = query.get('from'); const to = query.get('to');
+          if ([...query.keys()].length !== 2 || !from || !to || !calendarDate(from) || !calendarDate(to)) {
+            return result(400, { error: 'Invalid date range' });
+          }
+          const span = (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000;
+          if (span < 0 || span > 30) return result(400, { error: 'Choose a range of up to 31 days' });
+          const days = Array.from({ length: span + 1 }, (_, index) =>
+            new Date(Date.parse(`${from}T00:00:00Z`) + index * 86_400_000).toISOString().slice(0, 10));
+          const doctorScope = member.role === 'doctor';
+          const withMoney = modules?.billing === true && !!billing;
+          const assigned = doctorScope ? new Set((await store.listDoctors(clinicSlug))
+            .filter((doctor) => doctor.active && doctor.staffSub === member.sub).map((doctor) => doctor.id)) : null;
+          const perDay = await Promise.all(days.map(async (day) => {
+            const [appointments, statuses, episodes] = await Promise.all([
+              store.listAppointments(clinicSlug, day), store.listEncounterStatuses(clinicSlug, day),
+              withMoney ? billing!.listEpisodes(clinicSlug, day) : Promise.resolve([]),
+            ]);
+            return { appointments, statuses, episodes: new Map(episodes.map((episode) => [episode.appointmentId, episode])) };
+          }));
+          const rows: Record<string, unknown>[] = [];
+          const needMethods: { row: Record<string, unknown>; appointmentId: string }[] = [];
+          for (const { appointments, statuses, episodes } of perDay) {
+            for (const appointment of appointments) {
+              if (assigned && !assigned.has(appointment.doctorId)) continue;
+              const episode = episodes.get(appointment.id);
+              const completed = statuses.get(appointment.id) === 'finalized';
+              const row: Record<string, unknown> = {
+                clinicDate: appointment.clinicDate, appointmentId: appointment.id, patientId: appointment.patientId,
+                patientName: appointment.patientName, doctorId: appointment.doctorId, doctorName: appointment.doctorName,
+                startAt: appointment.startAt, source: appointment.source,
+                attended: completed || appointment.status === 'checked_in', completed,
+                consultationPaise: episode ? episode.consultationTotalPaise : null,
+              };
+              // A doctor sees only the consultation fee for their own visits; clinic money stays with reception/admin.
+              if (!doctorScope) {
+                row.pharmacyPaise = episode ? episode.pharmacyTotalPaise : null;
+                row.paidPaise = episode ? episode.paidPaise : null;
+                row.receiptIssued = episode ? episode.receiptIssued : null;
+                row.methods = episode ? { cash: 0, upi: 0, card: 0 } : null;
+                if (episode && episode.paymentCount > 0) needMethods.push({ row, appointmentId: appointment.id });
+              }
+              rows.push(row);
+            }
+          }
+          for (let start = 0; start < needMethods.length; start += 25) {
+            await Promise.all(needMethods.slice(start, start + 25).map(async ({ row, appointmentId }) => {
+              const methods = { cash: 0, upi: 0, card: 0 };
+              for (const payment of (await billing!.load(clinicSlug, appointmentId)).payments) methods[payment.method] += payment.amountPaise;
+              row.methods = methods;
+            }));
+          }
+          return result(200, { from, to, scope: doctorScope ? 'doctor' : 'clinic', money: withMoney, rows });
         }
 
         if (input.method === 'GET' && endpoint === 'doctors' && !(input.queryString ?? '')) {

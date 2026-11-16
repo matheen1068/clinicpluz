@@ -259,6 +259,9 @@ Resources:
         Dashboard:
           Type: HttpApi
           Properties: { ApiId: !Ref WorkflowApi, Path: '/api/workflow/clinics/{slug}/dashboard', Method: GET, PayloadFormatVersion: '2.0' }
+        Daybook:
+          Type: HttpApi
+          Properties: { ApiId: !Ref WorkflowApi, Path: '/api/workflow/clinics/{slug}/daybook', Method: GET, PayloadFormatVersion: '2.0' }
         BillingConfig:
           Type: HttpApi
           Properties: { ApiId: !Ref WorkflowApi, Path: '/api/workflow/clinics/{slug}/billing/config', Method: GET, PayloadFormatVersion: '2.0' }

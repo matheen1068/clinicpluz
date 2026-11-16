@@ -307,13 +307,14 @@ function ConsultationDesk({ clinicSlug, csrfToken, role, onSessionLost, onDirtyC
     finally { setPending(null); }
   }
 
-  async function handleDraft(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!doctorRole || !selected || !encounter || pending || encounter.status === 'finalized' || needsReload) return;
-    if (medications.length > 20) { setActionError('Use at most 20 doctor-entered medication entries.'); return; }
-    if (medications.some((medication) => !medication.name.trim())) { setActionError('Enter a name for each medicine or remove its empty row.'); return; }
+  function handleDraft(event: FormEvent<HTMLFormElement>) { event.preventDefault(); void saveDraftNow(); }
+  /** Returns true only when the server confirmed the save. */
+  async function saveDraftNow(): Promise<boolean> {
+    if (!doctorRole || !selected || !encounter || pending || encounter.status === 'finalized' || needsReload) return false;
+    if (medications.length > 20) { setActionError('Use at most 20 doctor-entered medication entries.'); return false; }
+    if (medications.some((medication) => !medication.name.trim())) { setActionError('Enter a name for each medicine or remove its empty row.'); return false; }
     const followUpIssue = followUpProblem(followUp, selected.clinicDate);
-    if (followUpIssue) { setActionError(followUpIssue); return; }
+    if (followUpIssue) { setActionError(followUpIssue); return false; }
     setPending('draft'); setActionError(''); setActionSuccess(''); setConfirmFinal(false);
     try {
       const saved = await saveDraft(clinicSlug, selected.appointmentId, selected.clinicDate, encounter.revision, note, medications, csrfToken, followUpPayload(followUp));
@@ -327,8 +328,19 @@ function ConsultationDesk({ clinicSlug, csrfToken, role, onSessionLost, onDirtyC
       setMedications(nextMedications); setMedicationBaseline(nextMedications);
       setActionSuccess('Consultation draft saved. It is not finalized.');
       setQueueReload((value) => value + 1);
-    } catch (error) { writeError(error, 'draft'); }
+      return true;
+    } catch (error) { writeError(error, 'draft'); return false; }
     finally { setPending(null); }
+  }
+  const stepIndex = DOCTOR_SECTIONS.findIndex((item) => item.id === doctorSection);
+  const previousStep = stepIndex > 0 ? DOCTOR_SECTIONS[stepIndex - 1] : null;
+  const nextStep = stepIndex >= 0 && stepIndex < DOCTOR_SECTIONS.length - 1 ? DOCTOR_SECTIONS[stepIndex + 1] : null;
+  const saveOnNext = (doctorSection === 'notes' || doctorSection === 'medicines') && noteDirty && encounter?.status === 'draft' && !needsReload;
+  async function goToStep(target: DoctorSection, saveFirst: boolean) {
+    if (pending || feePending) return;
+    if (saveFirst && !(await saveDraftNow())) return;
+    setConfirmFinal(false); setDoctorSection(target);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
   async function handleFinalize() {
@@ -429,6 +441,10 @@ function ConsultationDesk({ clinicSlug, csrfToken, role, onSessionLost, onDirtyC
           </section>}
 
           {doctorSection === 'review' && printable && <section className="workflow-card consultation-section consultation-print-action"><div><h4>Finalized prescription</h4><p>Print the server-confirmed prescription for this synthetic pilot.</p></div><button type="button" className="workflow-action" onClick={() => window.print()}>Print prescription</button></section>}
+          {doctorRole && doctorSection !== 'schedule' && <nav className="step-nav" aria-label="Move between visit steps">
+            {previousStep ? <button type="button" className="workflow-link" disabled={!!pending || feePending} onClick={() => void goToStep(previousStep.id, false)}>← Back: {previousStep.label}</button> : <span />}
+            {nextStep && <button type="button" className="workflow-action" disabled={!!pending || feePending} onClick={() => void goToStep(nextStep.id, saveOnNext)}>{pending === 'draft' ? 'Saving…' : `${saveOnNext ? 'Save & next' : 'Next'}: ${nextStep.label} →`}</button>}
+          </nav>}
         </>}
       </div>}
     </div>

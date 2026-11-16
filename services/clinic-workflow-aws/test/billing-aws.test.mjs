@@ -137,7 +137,7 @@ test('durable operation lookup is tenant-bound and a conditional race never repo
 test('SAM registers every billing route on the existing workflow API', () => {
   const template = readFileSync(new URL('../template.yaml', import.meta.url), 'utf8');
   for (const suffix of [
-    'appointments/check-in', 'dashboard', 'billing/config', 'billing/episodes', 'billing/read',
+    'appointments/check-in', 'dashboard', 'daybook', 'billing/config', 'billing/episodes', 'billing/read',
     'billing/consultation-fee/read',
     'billing/consultation-charge', 'billing/fulfillment/read', 'billing/fulfillment',
     'billing/payments', 'billing/receipt',
