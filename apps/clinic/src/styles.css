@@ -675,3 +675,36 @@ select:focus-visible, input:focus-visible { outline: 3px solid #82d6a3; outline-
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .consultation-route { display: grid; gap: 8px; }
 .reception-rx-actions { display: grid; gap: 12px; margin-top: 12px; }
+
+/* Daybook */
+.daybook { display: grid; gap: 16px; }
+.daybook-controls { display: flex; flex-wrap: wrap; gap: 12px 16px; align-items: flex-end; }
+.daybook-custom { display: flex; gap: 10px; }
+.daybook-actions { display: flex; gap: 12px; align-items: center; margin-left: auto; }
+.daybook-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+.daybook-cards > div { border: 1px solid #cfe3d8; background: #fff; border-radius: 14px; padding: 14px 16px; display: grid; gap: 2px; }
+.daybook-cards span { font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--cp-muted); }
+.daybook-cards strong { font-size: 26px; color: var(--cp-ink); }
+.daybook-cards small { font-size: 12px; color: var(--cp-muted); }
+.daybook-cards .is-due { border-color: #efcf92; background: #fffaf0; }
+.daybook-doctors { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; }
+.daybook-doctors li { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px solid #e3eee7; padding: 4px 0; }
+.daybook-days { display: grid; gap: 8px; margin-top: 8px; }
+.daybook-day { border: 1px solid #cfe3d8; border-radius: 12px; overflow: hidden; }
+.daybook-day-head { width: 100%; display: flex; flex-wrap: wrap; gap: 6px 18px; justify-content: space-between; align-items: center; padding: 12px 14px; border: 0; background: #f6fbf8; color: var(--cp-ink); font: inherit; text-align: left; cursor: pointer; }
+.daybook-day-head:hover { background: #eaf5ee; }
+.daybook-day-body { display: none; padding: 4px 14px 12px; overflow-x: auto; }
+.daybook-day.is-open .daybook-day-body { display: block; }
+.daybook table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.daybook th, .daybook td { padding: 7px 8px; border-bottom: 1px solid #e3eee7; text-align: left; white-space: nowrap; }
+.daybook th { font-size: 12px; color: var(--cp-muted); }
+.daybook-print-title, .daybook-print-only { display: none; }
+.step-nav { display: flex; justify-content: space-between; gap: 12px; margin-top: 16px; }
+.step-nav .workflow-action { margin: 0; }
+@media print {
+  .daybook .no-print { display: none !important; }
+  .daybook-print-title { display: block; font-weight: 700; font-size: 13pt; }
+  .daybook-print-only { display: inline; }
+  .daybook-day-body { display: block !important; }
+  .daybook-day { break-inside: avoid; }
+}
