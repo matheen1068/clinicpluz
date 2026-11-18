@@ -708,3 +708,8 @@ select:focus-visible, input:focus-visible { outline: 3px solid #82d6a3; outline-
   .daybook-day-body { display: block !important; }
   .daybook-day { break-inside: avoid; }
 }
+
+.link-button{background:none;border:0;padding:0;color:#0d7a68;font:inherit;font-weight:700;text-decoration:underline;cursor:pointer}
+.form-info{margin:0 0 10px;padding:10px 12px;border-radius:10px;background:#e8f7f1;color:#0d403a;font-size:14px}
+.show-password{display:flex;align-items:center;gap:8px;font-size:14px;color:#46605c}
+.field small{display:block;margin-top:6px;color:#5d726e;font-size:12.5px}

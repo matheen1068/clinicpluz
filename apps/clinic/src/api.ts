@@ -20,11 +20,13 @@ export interface StaffSession {
 
 export class ApiError extends Error {
   readonly status: number | null;
+  readonly code: string | null;
 
-  constructor(status: number | null, message: string) {
+  constructor(status: number | null, message: string, code: string | null = null) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -75,7 +77,14 @@ async function request(path: string, init: RequestInit = {}): Promise<unknown> {
     // error. Do not mistake that for a deliberate rejection by the JSON API.
     const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase();
     const fromApi = contentType === 'application/json' || contentType?.endsWith('+json');
-    throw new ApiError(fromApi ? response.status : null, 'Clinic request failed');
+    let code: string | null = null;
+    if (fromApi) {
+      try {
+        const failure: unknown = await response.json();
+        if (isRecord(failure) && typeof failure.code === 'string' && /^[a-z_]{1,32}$/.test(failure.code)) code = failure.code;
+      } catch { /* generic failure */ }
+    }
+    throw new ApiError(fromApi ? response.status : null, 'Clinic request failed', code);
   }
   if (response.status === 204) return null;
   try {
@@ -114,6 +123,30 @@ export async function signIn(slug: string, username: string, password: string, c
     },
     body: JSON.stringify({ username, password }),
   }));
+}
+
+export async function setNewPassword(slug: string, username: string, temporaryPassword: string, newPassword: string, csrfToken: string): Promise<StaffSession> {
+  return assertSession(await request(clinicPath(slug, 'auth/set-password'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+    body: JSON.stringify({ username, password: temporaryPassword, newPassword }),
+  }));
+}
+
+export async function requestPasswordReset(slug: string, username: string, csrfToken: string): Promise<void> {
+  await request(clinicPath(slug, 'auth/forgot'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+    body: JSON.stringify({ username }),
+  });
+}
+
+export async function confirmPasswordReset(slug: string, username: string, code: string, newPassword: string, csrfToken: string): Promise<void> {
+  await request(clinicPath(slug, 'auth/reset'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+    body: JSON.stringify({ username, code, newPassword }),
+  });
 }
 
 export async function signOut(slug: string, csrfToken: string): Promise<void> {

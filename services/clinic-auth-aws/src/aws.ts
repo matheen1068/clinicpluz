@@ -3,7 +3,8 @@ import {
   TransactWriteItemsCommand, UpdateItemCommand, type AttributeValue,
 } from '@aws-sdk/client-dynamodb';
 import {
-  CognitoIdentityProviderClient, AdminInitiateAuthCommand, AdminGetUserCommand,
+  CognitoIdentityProviderClient, AdminInitiateAuthCommand, AdminGetUserCommand, AdminRespondToAuthChallengeCommand,
+  ForgotPasswordCommand, ConfirmForgotPasswordCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
 import { IdentityError, ROLES, type AuthRepository, type Clinic, type Membership, type PreSession, type StaffSession, type IdentityProvider, type CognitoResult } from './core.js';
 import { createHash } from 'node:crypto';
@@ -165,6 +166,7 @@ export class CognitoStaffIdentity implements IdentityProvider {
       if (error instanceof Error && error.name === 'PasswordResetRequiredException') return { kind: 'challenge' };
       throw error;
     }
+    if (result.ChallengeName === 'NEW_PASSWORD_REQUIRED') return { kind: 'new-password-required' };
     if (result.ChallengeName) return { kind: 'challenge' };
     if (!result.AuthenticationResult?.AccessToken) throw new Error('Cognito did not complete authentication');
     // Cognito tokens never leave this service; AdminGetUser supplies the stable sub.
@@ -172,6 +174,53 @@ export class CognitoStaffIdentity implements IdentityProvider {
     const sub = user.UserAttributes?.find((attribute) => attribute.Name === 'sub')?.Value;
     if (!user.Enabled || user.UserStatus !== 'CONFIRMED' || !sub) throw new IdentityError('invalid-credentials');
     return { kind: 'authenticated', sub };
+  }
+
+  async completeNewPassword(cognitoUsername: string, temporaryPassword: string, newPassword: string): Promise<{ sub: string }> {
+    let started;
+    try {
+      started = await this.client.send(new AdminInitiateAuthCommand({
+        UserPoolId: this.userPoolId, ClientId: this.clientId, AuthFlow: 'ADMIN_USER_PASSWORD_AUTH',
+        AuthParameters: { USERNAME: cognitoUsername, PASSWORD: temporaryPassword },
+      }));
+    } catch (error) {
+      if (error instanceof Error && ['NotAuthorizedException', 'UserNotFoundException'].includes(error.name)) throw new IdentityError('invalid-credentials');
+      if (error instanceof Error && ['TooManyRequestsException', 'LimitExceededException'].includes(error.name)) throw new IdentityError('throttled');
+      throw error;
+    }
+    if (started.ChallengeName !== 'NEW_PASSWORD_REQUIRED' || !started.Session) throw new IdentityError('not-pending');
+    try {
+      await this.client.send(new AdminRespondToAuthChallengeCommand({
+        UserPoolId: this.userPoolId, ClientId: this.clientId, ChallengeName: 'NEW_PASSWORD_REQUIRED', Session: started.Session,
+        ChallengeResponses: { USERNAME: cognitoUsername, NEW_PASSWORD: newPassword },
+      }));
+    } catch (error) {
+      if (error instanceof Error && error.name === 'InvalidPasswordException') throw new IdentityError('weak-password');
+      if (error instanceof Error && ['NotAuthorizedException', 'CodeMismatchException', 'ExpiredCodeException'].includes(error.name)) throw new IdentityError('invalid-credentials');
+      if (error instanceof Error && ['TooManyRequestsException', 'LimitExceededException'].includes(error.name)) throw new IdentityError('throttled');
+      throw error;
+    }
+    const user = await this.user(cognitoUsername);
+    const sub = user.UserAttributes?.find((attribute) => attribute.Name === 'sub')?.Value;
+    if (!user.Enabled || user.UserStatus !== 'CONFIRMED' || !sub) throw new IdentityError('invalid-credentials');
+    return { sub };
+  }
+
+  async startReset(cognitoUsername: string): Promise<void> {
+    await this.client.send(new ForgotPasswordCommand({ ClientId: this.clientId, Username: cognitoUsername }));
+  }
+
+  async confirmReset(cognitoUsername: string, code: string, newPassword: string): Promise<void> {
+    try {
+      await this.client.send(new ConfirmForgotPasswordCommand({
+        ClientId: this.clientId, Username: cognitoUsername, ConfirmationCode: code, Password: newPassword,
+      }));
+    } catch (error) {
+      if (error instanceof Error && error.name === 'InvalidPasswordException') throw new IdentityError('weak-password');
+      if (error instanceof Error && ['CodeMismatchException', 'ExpiredCodeException', 'NotAuthorizedException', 'UserNotFoundException'].includes(error.name)) throw new IdentityError('invalid-code');
+      if (error instanceof Error && ['TooManyRequestsException', 'LimitExceededException', 'TooManyFailedAttemptsException'].includes(error.name)) throw new IdentityError('throttled');
+      throw error;
+    }
   }
 
   async isActive(cognitoUsername: string, sub: string): Promise<boolean> {

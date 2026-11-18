@@ -26,6 +26,9 @@ Resources:
       UserPoolName: !Sub clinicpluz-${StageName}-staff
       AdminCreateUserConfig:
         AllowAdminCreateUserOnly: true
+        InvitationMessageTemplate:
+          EmailSubject: Your ClinicPluz clinic login
+          EmailMessage: 'Your clinic administrator created a ClinicPluz login for you. Your temporary password is {####}. Open your clinic sign-in link, enter the username your administrator gave you with this temporary password, and choose your own password. (Account id for support: {username})'
       UsernameConfiguration:
         CaseSensitive: false
       MfaConfiguration: 'OFF' # Synthetic staging only; build MFA challenge UI before a real clinic pilot.
@@ -111,6 +114,7 @@ Resources:
               Action:
                 - cognito-idp:AdminInitiateAuth
                 - cognito-idp:AdminGetUser
+                - cognito-idp:AdminRespondToAuthChallenge
               Resource: !GetAtt StaffUserPool.Arn
             - Effect: Allow
               Action: secretsmanager:GetSecretValue
@@ -128,6 +132,15 @@ Resources:
         Logout:
           Type: HttpApi
           Properties: { ApiId: !Ref AuthApi, Path: '/api/clinics/{slug}/auth/logout', Method: POST, PayloadFormatVersion: '2.0' }
+        SetPassword:
+          Type: HttpApi
+          Properties: { ApiId: !Ref AuthApi, Path: '/api/clinics/{slug}/auth/set-password', Method: POST, PayloadFormatVersion: '2.0' }
+        ForgotPassword:
+          Type: HttpApi
+          Properties: { ApiId: !Ref AuthApi, Path: '/api/clinics/{slug}/auth/forgot', Method: POST, PayloadFormatVersion: '2.0' }
+        ResetPassword:
+          Type: HttpApi
+          Properties: { ApiId: !Ref AuthApi, Path: '/api/clinics/{slug}/auth/reset', Method: POST, PayloadFormatVersion: '2.0' }
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
