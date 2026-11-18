@@ -35,15 +35,20 @@ export interface AuthRepository {
   recordFailure(slug: string, username: string, window: number, expiresAt: number): Promise<void>;
 }
 
-export type CognitoResult = { kind: 'authenticated'; sub: string } | { kind: 'challenge' };
+export type CognitoResult = { kind: 'authenticated'; sub: string } | { kind: 'challenge' } | { kind: 'new-password-required' };
 export interface IdentityProvider {
   authenticate(cognitoUsername: string, password: string): Promise<CognitoResult>;
   isActive(cognitoUsername: string, sub: string): Promise<boolean>;
+  /** First sign-in: swaps the emailed temporary password for the person's own and signs them in. */
+  completeNewPassword(cognitoUsername: string, temporaryPassword: string, newPassword: string): Promise<{ sub: string }>;
+  /** Emails a reset code; must never reveal whether the account exists. */
+  startReset(cognitoUsername: string): Promise<void>;
+  confirmReset(cognitoUsername: string, code: string, newPassword: string): Promise<void>;
 }
 
 export class IdentityError extends Error {
-  readonly kind: 'invalid-credentials' | 'throttled';
-  constructor(kind: 'invalid-credentials' | 'throttled') {
+  readonly kind: 'invalid-credentials' | 'throttled' | 'weak-password' | 'invalid-code' | 'not-pending';
+  constructor(kind: 'invalid-credentials' | 'throttled' | 'weak-password' | 'invalid-code' | 'not-pending') {
     super(kind);
     this.kind = kind;
   }
@@ -106,6 +111,19 @@ function readCookie(input: HttpInput, name: string): { valid: boolean; value: st
   }
   return { valid: true, value: found };
 }
+function jsonObject(input: HttpInput): Record<string, unknown> | null {
+  if (!input.headers['content-type']?.toLowerCase().startsWith('application/json') ||
+      !input.body || input.body.length > 4096 || input.isBase64Encoded) return null;
+  let parsed: unknown;
+  try { parsed = JSON.parse(input.body); } catch { return null; }
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+}
+function normalizedUsername(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().toLowerCase();
+  return /^[a-z0-9._@+-]{3,128}$/.test(normalized) ? normalized : null;
+}
+const validNewPassword = (value: unknown): value is string => typeof value === 'string' && value.length >= 12 && value.length <= 256;
 function credentials(input: HttpInput): { username: string; password: string } | null {
   if (!input.headers['content-type']?.toLowerCase().startsWith('application/json') ||
       !input.body || input.body.length > 4096 || input.isBase64Encoded) return null;
@@ -148,7 +166,7 @@ export function createAuthApp(repo: AuthRepository, identity: IdentityProvider, 
       try {
         if (!safeEqual(input.headers['x-clinicpluz-edge-key'] ?? '', config.edgeKey)) return response(403, { error: 'Forbidden' });
         if (input.headers.origin && input.headers.origin !== config.publicOrigin) return response(403, { error: 'Origin rejected' });
-        const match = /^\/api\/clinics\/([a-z0-9-]+)\/(bootstrap|auth\/session|auth\/login|auth\/logout)$/.exec(input.path);
+        const match = /^\/api\/clinics\/([a-z0-9-]+)\/(bootstrap|auth\/session|auth\/login|auth\/logout|auth\/set-password|auth\/forgot|auth\/reset)$/.exec(input.path);
         if (!match || !validSlug(match[1])) return response(404, { error: 'Not found' });
         const slug = match[1];
         const endpoint = match[2];
@@ -177,7 +195,7 @@ export function createAuthApp(repo: AuthRepository, identity: IdentityProvider, 
           });
         }
 
-        if (input.method === 'POST' && (endpoint === 'auth/login' || endpoint === 'auth/logout')) {
+        if (input.method === 'POST' && (endpoint === 'auth/login' || endpoint === 'auth/logout' || endpoint === 'auth/set-password' || endpoint === 'auth/forgot' || endpoint === 'auth/reset')) {
           if (input.headers.origin !== config.publicOrigin) return response(403, { error: 'Origin rejected' });
           if (endpoint === 'auth/logout') {
             const current = await currentSession(input, slug, nowSeconds);
@@ -186,6 +204,49 @@ export function createAuthApp(repo: AuthRepository, identity: IdentityProvider, 
             if (!safeEqual(input.headers['x-csrf-token'] ?? '', current.session!.csrfToken)) return response(403, { error: 'CSRF rejected' });
             await repo.deleteSession(current.hash!);
             return response(204, null, [clearCookie(SESSION_COOKIE)]);
+          }
+
+          if (endpoint === 'auth/forgot' || endpoint === 'auth/reset') {
+            // Pre-session CSRF only: the person is not signed in. Responses never reveal whether a username exists.
+            const preCookieR = readCookie(input, PRE_COOKIE);
+            if (!preCookieR.valid || !preCookieR.value) return response(403, { error: 'CSRF rejected' });
+            const preR = await repo.getPre(sha256(preCookieR.value));
+            if (!preR || preR.expiresAt <= nowSeconds || preR.clinicSlug !== slug ||
+                !safeEqual(input.headers['x-csrf-token'] ?? '', preR.csrfToken)) return response(403, { error: 'CSRF rejected' });
+            const body = jsonObject(input);
+            const who = body && normalizedUsername(body.username);
+            if (!body || !who) return response(400, { error: 'Invalid request' });
+            const windowR = Math.floor(nowSeconds / FAILURE_WINDOW_SECONDS);
+            const counter = `reset:${who}`;
+            const limited = (await repo.getFailureCount(slug, counter, windowR)) >= 5;
+            if (endpoint === 'auth/forgot') {
+              if (!limited) {
+                await repo.recordFailure(slug, counter, windowR, (windowR + 1) * FAILURE_WINDOW_SECONDS + 60);
+                const found = await repo.getMembership(slug, who);
+                if (found?.active && found.clinicSlug === slug) {
+                  try { await identity.startReset(found.cognitoUsername); } catch { /* same answer either way */ }
+                }
+              }
+              return response(204, null);
+            }
+            if (limited) return response(429, { error: 'Too many attempts' });
+            if (typeof body.code !== 'string' || !/^[0-9]{6}$/.test(body.code) || !validNewPassword(body.newPassword)) return response(400, { error: 'Invalid request' });
+            const target = await repo.getMembership(slug, who);
+            if (!target?.active || target.clinicSlug !== slug) {
+              await repo.recordFailure(slug, counter, windowR, (windowR + 1) * FAILURE_WINDOW_SECONDS + 60);
+              return response(400, { error: 'Code is invalid or expired', code: 'invalid_code' });
+            }
+            try { await identity.confirmReset(target.cognitoUsername, body.code, body.newPassword); }
+            catch (error) {
+              if (error instanceof IdentityError && error.kind === 'weak-password') return response(400, { error: 'Password does not meet the requirements', code: 'weak_password' });
+              if (error instanceof IdentityError && error.kind === 'throttled') return response(429, { error: 'Too many attempts' });
+              if (error instanceof IdentityError && (error.kind === 'invalid-code' || error.kind === 'invalid-credentials')) {
+                await repo.recordFailure(slug, counter, windowR, (windowR + 1) * FAILURE_WINDOW_SECONDS + 60);
+                return response(400, { error: 'Code is invalid or expired', code: 'invalid_code' });
+              }
+              throw error;
+            }
+            return response(204, null);
           }
 
           const existingSession = readCookie(input, SESSION_COOKIE);
@@ -200,7 +261,16 @@ export function createAuthApp(repo: AuthRepository, identity: IdentityProvider, 
           const pre = await repo.getPre(preHash);
           if (!pre || pre.expiresAt <= nowSeconds || pre.clinicSlug !== slug ||
               !safeEqual(input.headers['x-csrf-token'] ?? '', pre.csrfToken)) return response(403, { error: 'CSRF rejected' });
-          const login = credentials(input);
+          let login = credentials(input);
+          let newPassword: string | null = null;
+          if (endpoint === 'auth/set-password') {
+            const body = jsonObject(input);
+            const who = body && normalizedUsername(body.username);
+            if (!body || !who || typeof body.password !== 'string' || body.password.length < 1 || body.password.length > 256 ||
+                !validNewPassword(body.newPassword) || body.newPassword === body.password) return response(400, { error: 'Invalid request', code: 'invalid' });
+            login = { username: who, password: body.password };
+            newPassword = body.newPassword;
+          }
           if (!login) return response(400, { error: 'Invalid request' });
           const window = Math.floor(nowSeconds / FAILURE_WINDOW_SECONDS);
           if ((await repo.getFailureCount(slug, login.username, window)) >= 5) return response(429, { error: 'Too many attempts' });
@@ -210,8 +280,13 @@ export function createAuthApp(repo: AuthRepository, identity: IdentityProvider, 
             return response(401, { error: 'Incorrect credentials' });
           }
           let authenticated: CognitoResult;
-          try { authenticated = await identity.authenticate(member.cognitoUsername, login.password); }
-          catch (error) {
+          try {
+            authenticated = newPassword !== null
+              ? { kind: 'authenticated', sub: (await identity.completeNewPassword(member.cognitoUsername, login.password, newPassword)).sub }
+              : await identity.authenticate(member.cognitoUsername, login.password);
+          } catch (error) {
+            if (error instanceof IdentityError && error.kind === 'weak-password') return response(400, { error: 'Password does not meet the requirements', code: 'weak_password' });
+            if (error instanceof IdentityError && error.kind === 'not-pending') return response(409, { error: 'This account already has a password', code: 'not_pending' });
             if (error instanceof IdentityError && error.kind === 'invalid-credentials') {
               await repo.recordFailure(slug, login.username, window, (window + 1) * FAILURE_WINDOW_SECONDS + 60);
               return response(401, { error: 'Incorrect credentials' });
@@ -219,6 +294,7 @@ export function createAuthApp(repo: AuthRepository, identity: IdentityProvider, 
             if (error instanceof IdentityError && error.kind === 'throttled') return response(429, { error: 'Too many attempts' });
             throw error;
           }
+          if (authenticated.kind === 'new-password-required') return response(409, { error: 'Choose a new password to continue', code: 'new_password_required' });
           if (authenticated.kind === 'challenge') return response(403, { error: 'Additional sign-in step required' });
           if (authenticated.sub !== member.sub) return response(403, { error: 'Clinic membership mismatch' });
           const sessionToken = token();

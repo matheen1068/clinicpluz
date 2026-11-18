@@ -47,18 +47,34 @@ class FakeRepo {
 
 function harness() {
   const repo = new FakeRepo();
-  const password = randomBytes(24).toString('base64url');
+  let password = randomBytes(24).toString('base64url');
+  let pending = false;
+  const resets = [];
   let clock = now;
   let challenge = false;
   let enabled = true;
   const identity = {
     async authenticate(cognitoUsername, suppliedPassword) {
       if (suppliedPassword !== password) throw new IdentityError('invalid-credentials');
+      if (pending) return { kind: 'new-password-required' };
       if (challenge) return { kind: 'challenge' };
       return { kind: 'authenticated', sub: cognitoUsername.replace('-staff', '-sub') };
     },
     async isActive(cognitoUsername, sub) {
       return enabled && cognitoUsername.replace('-staff', '-sub') === sub;
+    },
+    async completeNewPassword(cognitoUsername, temp, next) {
+      if (temp !== password) throw new IdentityError('invalid-credentials');
+      if (!pending) throw new IdentityError('not-pending');
+      if (!/[A-Z]/.test(next)) throw new IdentityError('weak-password');
+      pending = false; password = next;
+      return { sub: cognitoUsername.replace('-staff', '-sub') };
+    },
+    async startReset(cognitoUsername) { resets.push(cognitoUsername); },
+    async confirmReset(cognitoUsername, code, next) {
+      if (code !== '123456') throw new IdentityError('invalid-code');
+      if (!/[A-Z]/.test(next)) throw new IdentityError('weak-password');
+      password = next;
     },
   };
   const app = createAuthApp(repo, identity, { publicOrigin: ORIGIN, edgeKey: EDGE_KEY, now: () => clock });
@@ -93,7 +109,7 @@ function harness() {
       body: { username: 'reception', password: supplied },
     });
   }
-  return { repo, jars, password, request, bootstrap, login, setTime: (value) => { clock = value; }, setChallenge: (value) => { challenge = value; }, setEnabled: (value) => { enabled = value; } };
+  return { repo, jars, get password() { return password; }, resets, setPending: (value) => { pending = value; }, request, bootstrap, login, setTime: (value) => { clock = value; }, setChallenge: (value) => { challenge = value; }, setEnabled: (value) => { enabled = value; } };
 }
 
 test('two clinic paths require separate membership; shared-host session cannot change clinics', async () => {
@@ -216,4 +232,66 @@ test('HTTP API v2 adapter preserves path, cookies and lowercases headers', () =>
     requestContext: { http: { method: 'GET' } },
   });
   assert.equal(duplicated, null);
+});
+
+test('first sign-in: temporary password asks for a new one, then signs in once and the old one stops working', async () => {
+  const h = harness();
+  h.setPending(true);
+  const csrf = await h.bootstrap('goodwell', 'a');
+  const first = await h.login('goodwell', csrf, 'a');
+  assert.equal(first.statusCode, 409);
+  assert.equal(JSON.parse(first.body).code, 'new_password_required');
+  assert.equal((first.cookies ?? []).some((cookie) => cookie.startsWith('__Host-cpz_session=') && !cookie.includes('Max-Age=0')), false);
+  const temp = h.password;
+  const set = (body) => h.request('goodwell', 'auth/set-password', { method: 'POST', cookieKey: 'a', headers: { 'x-csrf-token': csrf }, body });
+  assert.equal((await set({ username: 'reception', password: 'wrong-temp', newPassword: 'Abcdefgh1234!' })).statusCode, 401);
+  assert.equal((await set({ username: 'reception', password: temp, newPassword: 'short' })).statusCode, 400);
+  assert.equal((await set({ username: 'reception', password: temp, newPassword: temp })).statusCode, 400);
+  const weak = await set({ username: 'reception', password: temp, newPassword: 'alllowercase1234!' });
+  assert.equal(weak.statusCode, 400); assert.equal(JSON.parse(weak.body).code, 'weak_password');
+  const ok = await set({ username: 'reception', password: temp, newPassword: 'Abcdefgh1234!' });
+  assert.equal(ok.statusCode, 200);
+  assert.ok(ok.cookies.some((cookie) => cookie.startsWith('__Host-cpz_session=')));
+  assert.equal(JSON.parse(ok.body).user.role, 'receptionist');
+  // The temporary password is dead; a second set-password cannot be used to take over.
+  const again = await h.bootstrap('goodwell', 'b');
+  const retry = await h.request('goodwell', 'auth/set-password', { method: 'POST', cookieKey: 'b', headers: { 'x-csrf-token': again }, body: { username: 'reception', password: temp, newPassword: 'Zyxwvuts9876!' } });
+  assert.equal(retry.statusCode, 401);
+  const signedIn = await h.login('goodwell', await h.bootstrap('goodwell', 'c'), 'c', 'Abcdefgh1234!');
+  assert.equal(signedIn.statusCode, 200);
+});
+
+test('set-password needs the clinic CSRF pair and an active membership in that clinic only', async () => {
+  const h = harness();
+  h.setPending(true);
+  const body = { username: 'reception', password: h.password, newPassword: 'Abcdefgh1234!' };
+  const noCsrf = await h.request('goodwell', 'auth/set-password', { method: 'POST', cookieKey: 'x', body });
+  assert.equal(noCsrf.statusCode, 403);
+  const csrf = await h.bootstrap('goodwell', 'y');
+  const wrongUser = await h.request('goodwell', 'auth/set-password', { method: 'POST', cookieKey: 'y', headers: { 'x-csrf-token': csrf }, body: { ...body, username: 'nobody' } });
+  assert.equal(wrongUser.statusCode, 401);
+  h.repo.members.get('goodwell:reception').active = false;
+  const inactive = await h.request('goodwell', 'auth/set-password', { method: 'POST', cookieKey: 'y', headers: { 'x-csrf-token': csrf }, body });
+  assert.equal(inactive.statusCode, 401);
+});
+
+test('forgot password answers identically for real and unknown users; reset needs the emailed code and is rate limited', async () => {
+  const h = harness();
+  const csrf = await h.bootstrap('goodwell', 'f');
+  const post = (endpoint, body, key = 'f', token = csrf) => h.request('goodwell', endpoint, { method: 'POST', cookieKey: key, headers: { 'x-csrf-token': token }, body });
+  assert.equal((await post('auth/forgot', { username: 'reception' })).statusCode, 204);
+  assert.equal((await post('auth/forgot', { username: 'ghost-user' })).statusCode, 204);
+  assert.deepEqual(h.resets, ['goodwell-staff']);
+  assert.equal((await h.request('goodwell', 'auth/forgot', { method: 'POST', cookieKey: 'none', body: { username: 'reception' } })).statusCode, 403);
+  const badCode = await post('auth/reset', { username: 'reception', code: '000000', newPassword: 'Abcdefgh1234!' });
+  assert.equal(badCode.statusCode, 400); assert.equal(JSON.parse(badCode.body).code, 'invalid_code');
+  assert.equal((await post('auth/reset', { username: 'reception', code: '12345', newPassword: 'Abcdefgh1234!' })).statusCode, 400);
+  const weak = await post('auth/reset', { username: 'reception', code: '123456', newPassword: 'alllowercase1234!' });
+  assert.equal(JSON.parse(weak.body).code, 'weak_password');
+  const done = await post('auth/reset', { username: 'reception', code: '123456', newPassword: 'Newpassw0rd!!' });
+  assert.equal(done.statusCode, 204);
+  assert.equal((await h.login('goodwell', await h.bootstrap('goodwell', 'g'), 'g', 'Newpassw0rd!!')).statusCode, 200);
+  const spam = await h.bootstrap('goodwell', 's');
+  for (let i = 0; i < 6; i += 1) await post('auth/reset', { username: 'reception', code: '000000', newPassword: 'Abcdefgh1234!' }, 's', spam);
+  assert.equal((await post('auth/reset', { username: 'reception', code: '123456', newPassword: 'Another0ne!!!!' }, 's', spam)).statusCode, 429);
 });

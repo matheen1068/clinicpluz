@@ -4,6 +4,9 @@ import {
   getClinicBootstrap,
   getStaffSession,
   signIn,
+  setNewPassword,
+  requestPasswordReset,
+  confirmPasswordReset,
   signOut,
   type ClinicBootstrap,
   type ClinicRole,
@@ -114,6 +117,76 @@ function SignInForm({ bootstrap, preview = false, onSuccess }: { bootstrap: Clin
   const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [view, setView] = useState<'signin' | 'new-password' | 'forgot' | 'reset'>('signin');
+  const [newPassword, setNewPasswordValue] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [resetCode, setResetCode] = useState('');
+  const [info, setInfo] = useState('');
+  const PASSWORD_RULE = 'At least 12 characters with an uppercase letter, a lowercase letter, a number and a symbol.';
+
+  function describeFailure(caught: unknown, fallback: string): string {
+    if (caught instanceof ApiError && caught.code === 'weak_password') return `That password is too weak. ${PASSWORD_RULE}`;
+    if (caught instanceof ApiError && caught.code === 'invalid_code') return 'That code is wrong or has expired. Check the latest email, or request a new code.';
+    if (caught instanceof ApiError && caught.code === 'not_pending') return 'This account already has a password. Sign in, or use “Forgot password”.';
+    if (caught instanceof ApiError && caught.status === 401) return 'Username or temporary password is incorrect.';
+    if (caught instanceof ApiError && caught.status === 403) return 'This page expired. Refresh and try again.';
+    if (caught instanceof ApiError && caught.status === 429) return 'Too many attempts. Please wait a few minutes and try again.';
+    return fallback;
+  }
+
+  async function finishSignIn(result: StaffSession, verifiedBootstrap: ClinicBootstrap) {
+    if (!clinicSlug) return;
+    const confirmed = await getStaffSession(clinicSlug);
+    if (!confirmed || result.clinicSlug !== clinicSlug || confirmed.clinicSlug !== clinicSlug || confirmed.user.id !== result.user.id) {
+      throw new ApiError(null, 'The clinic session could not be verified');
+    }
+    setPassword(''); setNewPasswordValue(''); setConfirmPassword('');
+    onSuccess(verifiedBootstrap, confirmed);
+  }
+
+  async function handleNewPassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (busy || !clinicSlug) return;
+    if (newPassword !== confirmPassword) { setError('The two new passwords do not match.'); return; }
+    setError(''); setBusy(true);
+    try {
+      const verifiedBootstrap = preview ? await getClinicBootstrap(clinicSlug) : bootstrap;
+      const result = await setNewPassword(clinicSlug, username.trim(), password, newPassword, verifiedBootstrap.csrfToken);
+      await finishSignIn(result, verifiedBootstrap);
+    } catch (caught) {
+      setError(describeFailure(caught, 'Could not set your password right now. Please try again.'));
+    } finally { setBusy(false); }
+  }
+
+  async function handleForgot(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (busy || !clinicSlug) return;
+    setError(''); setBusy(true);
+    try {
+      const verifiedBootstrap = preview ? await getClinicBootstrap(clinicSlug) : bootstrap;
+      await requestPasswordReset(clinicSlug, username.trim(), verifiedBootstrap.csrfToken);
+      setInfo('If that username has access to this clinic, a 6-digit code was emailed to it.');
+      setView('reset');
+    } catch (caught) {
+      setError(describeFailure(caught, 'Could not send a code right now. Please try again.'));
+    } finally { setBusy(false); }
+  }
+
+  async function handleReset(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (busy || !clinicSlug) return;
+    if (newPassword !== confirmPassword) { setError('The two new passwords do not match.'); return; }
+    setError(''); setBusy(true);
+    try {
+      const verifiedBootstrap = preview ? await getClinicBootstrap(clinicSlug) : bootstrap;
+      await confirmPasswordReset(clinicSlug, username.trim(), resetCode.trim(), newPassword, verifiedBootstrap.csrfToken);
+      setNewPasswordValue(''); setConfirmPassword(''); setResetCode(''); setPassword('');
+      setInfo('Password changed. Sign in with your new password.');
+      setView('signin');
+    } catch (caught) {
+      setError(describeFailure(caught, 'Could not reset your password right now. Please try again.'));
+    } finally { setBusy(false); }
+  }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -132,6 +205,11 @@ function SignInForm({ bootstrap, preview = false, onSuccess }: { bootstrap: Clin
       setPassword('');
       onSuccess(verifiedBootstrap, confirmed);
     } catch (caught) {
+      if (caught instanceof ApiError && caught.status === 409 && caught.code === 'new_password_required') {
+        // Keep the temporary password in memory only so the next step can exchange it.
+        setError(''); setInfo('Welcome! Choose your own password to finish setting up your account.'); setView('new-password');
+        return;
+      }
       setPassword('');
       if (caught instanceof ApiError && caught.status === 401) {
         setError('Username or password is incorrect. Please try again.');
@@ -155,10 +233,43 @@ function SignInForm({ bootstrap, preview = false, onSuccess }: { bootstrap: Clin
         <div><span className="identity-label">YOUR CLINIC WORKSPACE</span><strong>{bootstrap.clinic.displayName}</strong></div>
         {!preview && <span className="identity-check" title="Clinic verified by service" aria-label="Clinic verified by service">✓</span>}
       </div>
+      {view === 'new-password' && <>
+        <div className="form-heading"><span className="eyebrow">FIRST SIGN-IN</span><h2>Choose your password</h2><p>{info}</p></div>
+        <form onSubmit={handleNewPassword} className="login-form" aria-busy={busy}>
+          <div className="field"><label htmlFor="new-password">New password</label><input id="new-password" type={showPassword ? 'text' : 'password'} autoComplete="new-password" value={newPassword} onChange={(event) => setNewPasswordValue(event.target.value)} minLength={12} required disabled={busy} /></div>
+          <div className="field"><label htmlFor="confirm-password">Confirm new password</label><input id="confirm-password" type={showPassword ? 'text' : 'password'} autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} minLength={12} required disabled={busy} /><small>{PASSWORD_RULE}</small></div>
+          <label className="show-password"><input type="checkbox" checked={showPassword} onChange={(event) => setShowPassword(event.target.checked)} /> Show passwords</label>
+          {error && <p className="form-error" role="alert">{error}</p>}
+          <button className="primary-button" type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save password and sign in'}{!busy && <ArrowIcon />}</button>
+        </form>
+      </>}
+      {view === 'forgot' && <>
+        <div className="form-heading"><span className="eyebrow">PASSWORD HELP</span><h2>Forgot your password?</h2><p>Enter your username. We email a 6-digit code to the address on your account.</p></div>
+        <form onSubmit={handleForgot} className="login-form" aria-busy={busy}>
+          <div className="field"><label htmlFor="forgot-username">Username</label><input id="forgot-username" type="text" autoComplete="username" autoCapitalize="none" spellCheck={false} value={username} onChange={(event) => setUsername(event.target.value)} required disabled={busy} /></div>
+          {error && <p className="form-error" role="alert">{error}</p>}
+          <button className="primary-button" type="submit" disabled={busy || !username.trim()}>{busy ? 'Sending…' : 'Email me a code'}</button>
+        </form>
+        <p className="help-note"><button type="button" className="link-button" onClick={() => { setView('signin'); setError(''); setInfo(''); }}>Back to sign in</button></p>
+      </>}
+      {view === 'reset' && <>
+        <div className="form-heading"><span className="eyebrow">PASSWORD HELP</span><h2>Enter your code</h2><p>{info}</p></div>
+        <form onSubmit={handleReset} className="login-form" aria-busy={busy}>
+          <div className="field"><label htmlFor="reset-code">6-digit code</label><input id="reset-code" type="text" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} value={resetCode} onChange={(event) => setResetCode(event.target.value)} required disabled={busy} /></div>
+          <div className="field"><label htmlFor="reset-new">New password</label><input id="reset-new" type={showPassword ? 'text' : 'password'} autoComplete="new-password" value={newPassword} onChange={(event) => setNewPasswordValue(event.target.value)} minLength={12} required disabled={busy} /></div>
+          <div className="field"><label htmlFor="reset-confirm">Confirm new password</label><input id="reset-confirm" type={showPassword ? 'text' : 'password'} autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} minLength={12} required disabled={busy} /><small>{PASSWORD_RULE}</small></div>
+          <label className="show-password"><input type="checkbox" checked={showPassword} onChange={(event) => setShowPassword(event.target.checked)} /> Show passwords</label>
+          {error && <p className="form-error" role="alert">{error}</p>}
+          <button className="primary-button" type="submit" disabled={busy}>{busy ? 'Saving…' : 'Set new password'}</button>
+        </form>
+        <p className="help-note"><button type="button" className="link-button" onClick={() => { setView('forgot'); setError(''); }}>Send a new code</button></p>
+      </>}
+      {view === 'signin' && <>
       <div className="form-heading">
         <span className="eyebrow">STAFF SIGN-IN</span>
         <h2>Welcome back</h2>
         <p>Sign in with your staff credentials to continue.</p>
+        {info && <p className="form-info" role="status">{info}</p>}
       </div>
       <form onSubmit={handleSubmit} className="login-form" aria-busy={busy}>
         <div className="field"><label htmlFor="username">Username</label><input id="username" name="username" type="text" autoComplete="username" autoCapitalize="none" spellCheck={false} value={username} onChange={(event) => setUsername(event.target.value)} placeholder="Enter your username" required disabled={busy} /></div>
@@ -166,7 +277,8 @@ function SignInForm({ bootstrap, preview = false, onSuccess }: { bootstrap: Clin
         {error && <p className="form-error" role="alert">{error}</p>}
         <button className="primary-button" type="submit" disabled={busy}>{busy ? 'Signing in…' : 'Sign in to your clinic'}{!busy && <ArrowIcon />}</button>
       </form>
-      <p className="help-note">Need access or forgot your password? <strong>Contact your clinic administrator.</strong></p>
+      <p className="help-note"><button type="button" className="link-button" onClick={() => { setView('forgot'); setError(''); setInfo(''); }}>Forgot password?</button> · New here? Use the temporary password from your invite email.</p>
+      </>}
     </>
   );
 }
