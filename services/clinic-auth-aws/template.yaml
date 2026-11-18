@@ -26,7 +26,7 @@ Resources:
       UserPoolName: !Sub clinicpluz-${StageName}-staff
       AdminCreateUserConfig:
         AllowAdminCreateUserOnly: true
-        InvitationMessageTemplate:
+        InviteMessageTemplate:
           EmailSubject: Your ClinicPluz clinic login
           EmailMessage: 'Your clinic administrator created a ClinicPluz login for you. Your temporary password is {####}. Open your clinic sign-in link, enter the username your administrator gave you with this temporary password, and choose your own password. (Account id for support: {username})'
       UsernameConfiguration:
