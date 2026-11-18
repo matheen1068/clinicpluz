@@ -1,7 +1,7 @@
 import {
   DynamoDBClient, GetItemCommand, QueryCommand, TransactWriteItemsCommand, type AttributeValue,
 } from '@aws-sdk/client-dynamodb';
-import { CognitoIdentityProviderClient, AdminGetUserCommand } from '@aws-sdk/client-cognito-identity-provider';
+import { CognitoIdentityProviderClient, AdminGetUserCommand, AdminCreateUserCommand, AdminDeleteUserCommand } from '@aws-sdk/client-cognito-identity-provider';
 import {
   MODULES, ROLES, type AuditEvent, type ClinicRecord, type ControlRepository,
   type BranchRecord, type CustomerRecord, type Entitlements, type EntitlementsRecord, type Page,
@@ -431,6 +431,37 @@ export class CognitoStaffLookup implements StaffIdentity {
       if (error instanceof Error && error.name === 'UserNotFoundException') return null;
       throw error;
     }
+  }
+  async invite(cognitoUsername: string, email: string): Promise<{ sub: string } | 'exists'> {
+    try {
+      const created = await this.client.send(new AdminCreateUserCommand({
+        UserPoolId: this.userPoolId, Username: cognitoUsername, DesiredDeliveryMediums: ['EMAIL'],
+        UserAttributes: [{ Name: 'email', Value: email }, { Name: 'email_verified', Value: 'true' }],
+      }));
+      const sub = created.User?.Attributes?.find((attribute) => attribute.Name === 'sub')?.Value;
+      if (!sub) throw new Error('Cognito did not return a user id');
+      return { sub };
+    } catch (error) {
+      if (error instanceof Error && error.name === 'UsernameExistsException') return 'exists';
+      throw error;
+    }
+  }
+  async resendInvite(cognitoUsername: string): Promise<boolean> {
+    try {
+      const user = await this.client.send(new AdminGetUserCommand({ UserPoolId: this.userPoolId, Username: cognitoUsername }));
+      if (user.UserStatus !== 'FORCE_CHANGE_PASSWORD') return false;
+      await this.client.send(new AdminCreateUserCommand({
+        UserPoolId: this.userPoolId, Username: cognitoUsername, MessageAction: 'RESEND', DesiredDeliveryMediums: ['EMAIL'],
+      }));
+      return true;
+    } catch (error) {
+      if (error instanceof Error && error.name === 'UserNotFoundException') return false;
+      throw error;
+    }
+  }
+  async remove(cognitoUsername: string): Promise<void> {
+    try { await this.client.send(new AdminDeleteUserCommand({ UserPoolId: this.userPoolId, Username: cognitoUsername })); }
+    catch (error) { if (!(error instanceof Error && error.name === 'UserNotFoundException')) throw error; }
   }
 }
 
