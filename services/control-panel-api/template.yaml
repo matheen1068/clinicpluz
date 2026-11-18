@@ -133,7 +133,7 @@ Resources:
                 'Null':
                   'dynamodb:LeadingKeys': 'false'
             - Effect: Allow
-              Action: ['cognito-idp:AdminGetUser']
+              Action: ['cognito-idp:AdminGetUser', 'cognito-idp:AdminCreateUser', 'cognito-idp:AdminDeleteUser']
               Resource: !Ref StaffUserPoolArn
       Events:
         CreateCustomer:
@@ -193,6 +193,9 @@ Resources:
         SetStaff:
           Type: HttpApi
           Properties: { ApiId: !Ref ControlApi, Path: '/api/control/clinics/{slug}/staff/{username}', Method: PATCH, PayloadFormatVersion: '2.0' }
+        ResendStaffInvite:
+          Type: HttpApi
+          Properties: { ApiId: !Ref ControlApi, Path: '/api/control/clinics/{slug}/staff/{username}/resend-invite', Method: POST, PayloadFormatVersion: '2.0' }
     Metadata:
       BuildMethod: esbuild
       BuildProperties:

@@ -110,7 +110,18 @@ class MemoryRepository {
 }
 function setup(allowedSubs = ['operator-1']) {
   const repo = new MemoryRepository();
-  const identity = { async lookup(username) { return username.startsWith('confirmed-') ? { sub: `sub-${username}` } : null; } };
+  const invited = new Map();
+  const removed = [];
+  const identity = {
+    async lookup(username) { return username.startsWith('confirmed-') ? { sub: `sub-${username}` } : null; },
+    async invite(username, email) {
+      if (invited.has(username) || username.includes('taken')) return 'exists';
+      invited.set(username, { email, pending: true });
+      return { sub: `sub-${username}` };
+    },
+    async resendInvite(username) { return invited.get(username)?.pending === true; },
+    async remove(username) { removed.push(username); invited.delete(username); },
+  };
   const app = createControlApp(repo, identity, {
     publicOrigin: ORIGIN, operatorIssuer: ISSUER, operatorClientId: 'operator-client',
     allowedOperatorSubs: new Set(allowedSubs), cursorSigningKey: 'cursor-secret-for-testing-only-32-characters',
@@ -125,7 +136,7 @@ function setup(allowedSubs = ['operator-1']) {
     });
     return { status: result.statusCode, body: JSON.parse(result.body), headers: result.headers };
   }
-  return { repo, call };
+  return { invited, removed, repo, call };
 }
 async function createCustomerAndBranch(call, slug = 'goodwell', branchName = 'Main', displayName = 'Goodwell Clinic') {
   const customer = await call('POST', '/api/control/customers', { displayName: 'Demo Customer' });
@@ -503,3 +514,30 @@ test('Control Panel memberships feed Green login and staff suspension revokes an
   assert.equal((await session()).statusCode, 401);
 });
 
+
+test('operator invites staff by email: login is created, linked and activation then succeeds; failures roll back', async () => {
+  const { invited, removed, repo, call } = setup();
+  await createCustomerAndBranch(call);
+  const bad = await call('POST', '/api/control/clinics/goodwell/staff', { username: 'alice', email: 'not-an-email', displayName: 'Alice', role: 'clinic_admin' });
+  assert.equal(bad.status, 400);
+  const extra = await call('POST', '/api/control/clinics/goodwell/staff', { username: 'alice', email: 'a@clinic.example', displayName: 'Alice', role: 'clinic_admin', cognitoUsername: 'x' });
+  assert.equal(extra.status, 400);
+  const taken = await call('POST', '/api/control/clinics/goodwell/staff', { username: 'taken', email: 'a@clinic.example', displayName: 'T', role: 'doctor' });
+  assert.equal(taken.status, 409); assert.equal(taken.body.code, 'login_exists');
+  const ok = await call('POST', '/api/control/clinics/goodwell/staff', { username: 'alice', email: 'Alice@Clinic.Example', displayName: 'Alice', role: 'clinic_admin' });
+  assert.equal(ok.status, 201);
+  assert.equal(ok.body.clinicLoginPath, '/clinic/goodwell/login/');
+  assert.equal(invited.get('goodwell.alice').email, 'alice@clinic.example');
+  assert.equal((await repo.getStaff('goodwell', 'alice')).cognitoUsername, 'goodwell.alice');
+  assert.ok(!JSON.stringify(repo.audits).includes('clinic.example'), 'email never reaches the audit log');
+  const dup = await call('POST', '/api/control/clinics/goodwell/staff', { username: 'alice', email: 'b@clinic.example', displayName: 'A2', role: 'doctor' });
+  assert.equal(dup.status, 409); assert.equal(dup.body.code, 'staff_exists');
+  assert.equal((await call('POST', '/api/control/clinics/goodwell/staff/alice/resend-invite')).status, 200);
+  invited.get('goodwell.alice').pending = false;
+  assert.equal((await call('POST', '/api/control/clinics/goodwell/staff/alice/resend-invite')).status, 409);
+  assert.equal((await call('POST', '/api/control/clinics/goodwell/staff/nobody/resend-invite')).status, 404);
+  const active = await call('PATCH', '/api/control/clinics/goodwell/state', { expectedVersion: 1, active: true, adminUsername: 'alice' });
+  assert.equal(active.status, 200);
+  assert.deepEqual(repo.audits.map((event) => event.action).slice(-2), ['staff.invited', 'clinic.state_changed']);
+  assert.deepEqual(removed, []);
+});

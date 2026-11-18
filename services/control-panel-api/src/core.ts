@@ -48,7 +48,16 @@ export interface ControlRepository {
   replaceEntitlements(record: EntitlementsRecord, expectedVersion: number, audit: AuditEvent): Promise<boolean>;
   setClinicState(clinic: ClinicRecord, expectedVersion: number, adminUsername: string | null, audit: AuditEvent): Promise<boolean>;
 }
-export interface StaffIdentity { lookup(cognitoUsername: string): Promise<{ sub: string } | null> }
+export interface StaffIdentity {
+  lookup(cognitoUsername: string): Promise<{ sub: string } | null>;
+  /** Creates a Cognito login and emails the invite; 'exists' when the username is taken. */
+  invite(cognitoUsername: string, email: string): Promise<{ sub: string } | 'exists'>;
+  /** Sends a fresh temporary password while the user has not yet set one. */
+  resendInvite(cognitoUsername: string): Promise<boolean>;
+  /** Rolls back an invite whose membership record could not be written. */
+  remove(cognitoUsername: string): Promise<void>;
+}
+const EMAIL = /^[^\s@]{1,64}@[^\s@]{1,255}\.[^\s@]{2,63}$/;
 export interface HttpInput {
   method: string; path: string; queryString?: string; headers: Record<string, string | undefined>;
   body?: string; isBase64Encoded?: boolean;
@@ -324,11 +333,12 @@ export function createControlApp(repo: ControlRepository, identity: StaffIdentit
           });
         }
 
-        const route = /^\/api\/control\/clinics\/([a-z0-9-]+)(?:\/(staff(?:\/([a-z0-9._@+-]+))?|modules|state|profile-access))?$/.exec(input.path);
+        const route = /^\/api\/control\/clinics\/([a-z0-9-]+)(?:\/(staff(?:\/([a-z0-9._@+-]+)(?:\/(resend-invite))?)?|modules|state|profile-access))?$/.exec(input.path);
         if (!route || !validSlug(route[1])) return respond(404, { error: 'Not found' });
         const slug = route[1];
         const endpoint = route[2] ?? '';
         const username = route[3];
+        const resend = route[4] === 'resend-invite';
         const clinic = await repo.getClinic(slug);
         if (!clinic) return respond(404, { error: 'Clinic not found' });
 
@@ -380,12 +390,37 @@ export function createControlApp(repo: ControlRepository, identity: StaffIdentit
         }
         if (input.method === 'POST' && endpoint === 'staff') {
           const request = body(input);
+          if (request && Object.prototype.hasOwnProperty.call(request, 'email')) {
+            // Invite flow: the platform creates the login and emails a temporary password.
+            if (!hasOnly(request, ['username', 'email', 'displayName', 'role']) ||
+                typeof request.username !== 'string' || !validUsername(request.username) ||
+                typeof request.email !== 'string' || !EMAIL.test(request.email.trim()) || request.email.length > 254 ||
+                !text(request.displayName, 120) || !isRole(request.role)) return respond(400, { error: 'Invalid staff invite', code: 'invalid' });
+            if (await repo.getStaff(slug, request.username)) return respond(409, { error: 'Username already used in this clinic', code: 'staff_exists' });
+            // Clinic-prefixed Cognito username keeps logins unique across clinics.
+            const cognitoUsername = `${slug}.${request.username}`;
+            if (!COGNITO_USERNAME.test(cognitoUsername)) return respond(400, { error: 'Invalid staff invite', code: 'invalid' });
+            const invited = await identity.invite(cognitoUsername, request.email.trim().toLowerCase());
+            if (invited === 'exists') return respond(409, { error: 'Login already exists', code: 'login_exists' });
+            const staff: StaffRecord = {
+              clinicSlug: slug, username: request.username, cognitoUsername, sub: invited.sub,
+              displayName: text(request.displayName, 120)!, role: request.role, active: true, version: 1,
+            };
+            let created = false;
+            try {
+              created = await repo.createStaff(staff, audit(actor, slug, 'staff.invited', staff.username, { role: staff.role, active: true }));
+            } finally {
+              if (!created) await identity.remove(cognitoUsername).catch(() => undefined);
+            }
+            return created ? respond(201, { staff: publicStaff(staff), clinicLoginPath: `/clinic/${slug}/login/` })
+              : respond(409, { error: 'Staff already exists or clinic changed', code: 'staff_exists' });
+          }
           if (!request || !hasOnly(request, ['username', 'cognitoUsername', 'displayName', 'role']) ||
               typeof request.username !== 'string' || !validUsername(request.username) ||
               typeof request.cognitoUsername !== 'string' || !COGNITO_USERNAME.test(request.cognitoUsername) ||
-              !text(request.displayName, 120) || !isRole(request.role)) return respond(400, { error: 'Invalid staff member' });
+              !text(request.displayName, 120) || !isRole(request.role)) return respond(400, { error: 'Invalid staff member', code: 'invalid' });
           const found = await identity.lookup(request.cognitoUsername);
-          if (!found || !found.sub) return respond(409, { error: 'Staff identity is not active and confirmed' });
+          if (!found || !found.sub) return respond(409, { error: 'Staff identity is not active and confirmed', code: 'identity_not_found' });
           const staff: StaffRecord = {
             clinicSlug: slug, username: request.username, cognitoUsername: request.cognitoUsername,
             sub: found.sub, displayName: text(request.displayName, 120)!, role: request.role,
@@ -393,7 +428,13 @@ export function createControlApp(repo: ControlRepository, identity: StaffIdentit
           };
           const created = await repo.createStaff(staff, audit(actor, slug, 'staff.created', staff.username,
             { role: staff.role, active: true }));
-          return created ? respond(201, { staff: publicStaff(staff) }) : respond(409, { error: 'Staff already exists or clinic changed' });
+          return created ? respond(201, { staff: publicStaff(staff) }) : respond(409, { error: 'Staff already exists or clinic changed', code: 'staff_exists' });
+        }
+        if (input.method === 'POST' && resend && username && validUsername(username)) {
+          const person = await repo.getStaff(slug, username);
+          if (!person || !person.active) return respond(404, { error: 'Staff not found' });
+          const sent = await identity.resendInvite(person.cognitoUsername);
+          return sent ? respond(200, { sent: true }) : respond(409, { error: 'This person already set a password', code: 'already_set' });
         }
         if (input.method === 'PATCH' && endpoint === `staff/${username}` && username && validUsername(username)) {
           const request = body(input);
@@ -432,12 +473,12 @@ export function createControlApp(repo: ControlRepository, identity: StaffIdentit
               (request.adminUsername !== null && (typeof request.adminUsername !== 'string' || !validUsername(request.adminUsername)))) {
             return respond(400, { error: 'Invalid clinic state' });
           }
-          if (clinic.version !== request.expectedVersion) return respond(409, { error: 'Clinic changed; refresh and retry' });
+          if (clinic.version !== request.expectedVersion) return respond(409, { error: 'Clinic changed; refresh and retry', code: 'version_conflict' });
           const adminUsername = request.active ? request.adminUsername as string | null : null;
           if (request.active) {
             if (!adminUsername) return respond(400, { error: 'Active clinic admin required' });
             const admin = await repo.getStaff(slug, adminUsername);
-            if (!admin?.active || admin.role !== 'clinic_admin') return respond(409, { error: 'Active clinic admin required' });
+            if (!admin?.active || admin.role !== 'clinic_admin') return respond(409, { error: 'Active clinic admin required', code: 'admin_required' });
           }
           const updated: ClinicRecord = { ...clinic, active: request.active, version: clinic.version + 1 };
           const applied = await repo.setClinicState(updated, clinic.version, adminUsername,

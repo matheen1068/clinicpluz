@@ -12,6 +12,8 @@ const dynamoStub = `
 const cognitoStub = `
   export class CognitoIdentityProviderClient {}
   export class AdminGetUserCommand { constructor(input) { this.input = input; } }
+  export class AdminCreateUserCommand { constructor(input) { this.input = input; } }
+  export class AdminDeleteUserCommand { constructor(input) { this.input = input; } }
 `;
 registerHooks({ resolve(specifier, context, nextResolve) {
   if (specifier === '@aws-sdk/client-dynamodb') {

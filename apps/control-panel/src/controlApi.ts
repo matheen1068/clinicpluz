@@ -28,7 +28,8 @@ export interface BranchDiagnostics {
 
 export class ControlApiError extends Error {
   readonly status: number | null;
-  constructor(status: number | null, message: string) { super(message); this.name = 'ControlApiError'; this.status = status; }
+  readonly code: string | null;
+  constructor(status: number | null, message: string, code: string | null = null) { super(message); this.name = 'ControlApiError'; this.status = status; this.code = code; }
 }
 
 type Dict = Record<string, unknown>;
@@ -126,6 +127,12 @@ export function safeError(error: unknown): string {
   if (!(error instanceof ControlApiError)) return 'The Control Panel is unavailable. Please try again.';
   if (error.status === 400) return 'Some details are invalid. Review the fields and try again.';
   if (error.status === 404) return 'This record was not found. Refresh the list.';
+  if (error.status === 409 && error.code === 'identity_not_found') return 'No confirmed login with that Cognito username exists. Use “Invite by email” to create one.';
+  if (error.status === 409 && error.code === 'admin_required') return 'This clinic needs an active clinic admin first. Invite or link one, then activate.';
+  if (error.status === 409 && error.code === 'staff_exists') return 'That username is already used in this clinic. Choose another.';
+  if (error.status === 409 && error.code === 'login_exists') return 'A login for that username already exists in the identity service. Choose another username.';
+  if (error.status === 409 && error.code === 'already_set') return 'This person already set a password, so there is no pending invite to resend.';
+  if (error.status === 409 && error.code === 'version_conflict') return 'This clinic changed since you opened it. Refresh and try again.';
   if (error.status === 409) return 'This record changed or conflicts with an existing one. Refresh and review before trying again.';
   if (error.status === 429) return 'Too many requests. Please wait and try again.';
   return 'The Control Panel is unavailable. Please try again.';
@@ -152,7 +159,14 @@ export class ControlApi {
     const jsonResponse = response.headers.get('content-type')?.toLowerCase().includes('application/json');
     if ((response.status === 401 || response.status === 403) && jsonResponse) throw new ControlApiError(response.status, 'Operator access denied');
     if ((response.status === 401 || response.status === 403) && !jsonResponse) throw new ControlApiError(null, 'Control API unavailable');
-    if (!response.ok) throw new ControlApiError(response.status, 'Control request failed');
+    if (!response.ok) {
+      let code: string | null = null;
+      try {
+        const failure: unknown = jsonResponse ? await response.json() : null;
+        if (record(failure) && typeof failure.code === 'string' && /^[a-z_]{1,32}$/.test(failure.code)) code = failure.code;
+      } catch { /* keep the generic message */ }
+      throw new ControlApiError(response.status, 'Control request failed', code);
+    }
     if (!jsonResponse) throw invalid();
     try { return await response.json(); } catch { throw invalid(); }
   }
@@ -242,6 +256,15 @@ export class ControlApi {
     const value = await this.request('POST', `/clinics/${encodeURIComponent(slug)}/staff`, input);
     if (!record(value)) throw invalid();
     return parseStaff(value.staff);
+  }
+  async inviteStaff(slug: string, input: { username: string; email: string; displayName: string; role: Role }): Promise<{ staff: Staff; clinicLoginPath: string }> {
+    const value = await this.request('POST', `/clinics/${encodeURIComponent(slug)}/staff`, input);
+    if (!record(value) || typeof value.clinicLoginPath !== 'string' || !/^\/clinic\/[a-z0-9-]+\/login\/$/.test(value.clinicLoginPath)) throw invalid();
+    return { staff: parseStaff(value.staff), clinicLoginPath: value.clinicLoginPath };
+  }
+  async resendInvite(slug: string, username: string): Promise<void> {
+    const value = await this.request('POST', `/clinics/${encodeURIComponent(slug)}/staff/${encodeURIComponent(username)}/resend-invite`);
+    if (!record(value) || value.sent !== true) throw invalid();
   }
   async updateStaff(slug: string, username: string, input: { expectedVersion: number; displayName: string; role: Role; active: boolean }): Promise<Staff> {
     const value = await this.request('PATCH', `/clinics/${encodeURIComponent(slug)}/staff/${encodeURIComponent(username)}`, input);
